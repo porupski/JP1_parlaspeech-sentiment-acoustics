@@ -70,7 +70,7 @@ def main():
                 continue
             df_feat = df.dropna(subset=[feat])
 
-            result = h2_kendall(df_feat, feat, use_bins=use_bins, n_bins=n_bins, seed=seed)
+            result = h2_kendall(df_feat, feat, use_bins=use_bins, n_bins=n_bins)
 
             # Bootstrap CI on mean tau
             # Collect per-speaker taus for CI

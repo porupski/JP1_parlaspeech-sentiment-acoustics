@@ -103,6 +103,11 @@ def main():
     idir = get_intermediate_dir(cfg)
 
     for lang in langs:
+        out = idir / f"{lang}_opensmile.tsv"
+        if out.exists():
+            print(f"[{lang}] {out} already exists — skipping. Delete to rerun.")
+            continue
+
         in_path = idir / f"{lang}_filtered.jsonl"
         if not in_path.exists():
             print(f"[{lang}] {in_path} not found. Run 10_filter.py first.")
