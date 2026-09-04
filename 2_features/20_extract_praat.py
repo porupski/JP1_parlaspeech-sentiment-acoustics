@@ -43,7 +43,10 @@ _G_CFG: dict = {}
 
 def _init_worker(index: dict, audio_root_str: str, cfg: dict) -> None:
     global _G_INDEX, _G_ROOT, _G_CFG
-    os.nice(19)
+    try:
+        os.setpriority(os.PRIO_PROCESS, 0, 19)
+    except OSError:
+        pass
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     _G_INDEX = index
     _G_ROOT = Path(audio_root_str)
@@ -93,7 +96,10 @@ def parse_args():
 
 
 def main():
-    os.nice(19)
+    try:
+        os.setpriority(os.PRIO_PROCESS, 0, 19)
+    except OSError:
+        pass
     args = parse_args()
     cfg = load_config(args.config)
     langs = args.langs or cfg["languages"]

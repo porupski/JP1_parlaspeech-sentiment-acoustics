@@ -63,7 +63,7 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
     # Pass 1: word count
     pass1 = []
     for rec in records:
-        words = rec.get(fwords, [])
+        words = rec.get(fwords) or []
         n_words = len(words)
         if min_w <= n_words <= max_w:
             # Determine sentiment label (use existing or derive from score)

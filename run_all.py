@@ -77,7 +77,10 @@ WORKER_STAGES = {"praat", "opensmile"}
 
 
 def main():
-    os.nice(19)
+    try:
+        os.setpriority(os.PRIO_PROCESS, 0, 19)
+    except OSError:
+        pass
     args = parse_args()
     lang_args = (["--langs"] + args.langs) if args.langs else []
 
