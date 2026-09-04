@@ -56,7 +56,7 @@
   },
 
   "vad": {
-    "nrc_vad_path": "data/lexicons/NRC-VAD-Lexicon-v2.1/NRC-VAD-Lexicon.txt",
+    "nrc_vad_path": "data/lexicons/NRC-VAD-Lexicon-v2.1/NRC-VAD-Lexicon-v2.1.txt",
     "_nrc_vad_note": "Run bash 0_env/get_nrc_vad.sh to download v2.1 automatically. Adjust filename if the zip extracts differently.",
     "nrc_lang_codes": {
       "HR": "Croatian",

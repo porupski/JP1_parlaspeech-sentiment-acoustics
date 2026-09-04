@@ -74,6 +74,7 @@ def run_stage(name: str, script: str, extra_args: list[str]) -> bool:
 
 
 WORKER_STAGES = {"praat", "opensmile"}
+NO_LANG_STAGES = {"corrections", "tables", "numbers", "plots"}
 
 
 def main():
@@ -97,7 +98,7 @@ def main():
     failed = []
     for name in order:
         script, desc = STAGES[name]
-        extra = lang_args.copy()
+        extra = [] if name in NO_LANG_STAGES else lang_args.copy()
         if args.dry_run and name == "filter":
             extra.append("--dry-run")
         if name in WORKER_STAGES:
