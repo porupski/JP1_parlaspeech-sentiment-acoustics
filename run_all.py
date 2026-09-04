@@ -43,7 +43,7 @@ STAGES = {
 
 DEFAULT_ORDER = [
     "filter", "speechrate", "praat", "opensmile",
-    "normalize", "join",
+    "join", "normalize",
     "h1", "h2", "h3", "corrections", "vad",
     "tables", "numbers", "plots",
 ]
