@@ -97,16 +97,23 @@
   },
 
   "jsonl_fields": {
-    "_note": "Map from internal names to actual ParlaSpeech v4 JSONL field names. Adjust if v4 uses different names.",
+    "_note": "Map internal names to ParlaSpeech v4 JSONL field names. Use dot notation for nested fields (e.g. 'a.b' accesses rec['a']['b']).",
     "utterance_id": "id",
-    "speaker_id": "speaker_id",
-    "session_id": "speech_id",
+    "speaker_id": "speaker_info.Speaker_ID",
+    "session_id": "speaker_info.Text_ID",
     "text": "text",
     "words_align": "words_align",
-    "sentiment_score": "sentiment_score",
-    "sentiment_label": "sentiment_label",
+    "sentiment_score": "sentiment.ParlaSent_logit",
+    "sentiment_label": "sentiment.ParlaSent_6",
     "audio_path": "audio",
-    "n_words": "n_words",
-    "gender": "gender"
+    "gender": "speaker_info.Speaker_gender"
+  },
+
+  "words_align_fields": {
+    "_note": "Field names inside each words_align entry in the JSONL.",
+    "start": "time_s",
+    "end": "time_e",
+    "char_start": "char_s",
+    "char_end": "char_e"
   }
 }

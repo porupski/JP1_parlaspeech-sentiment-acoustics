@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_config, get_jsonl_path, get_intermediate_dir, get_field
-from utils.data_utils import load_jsonl, write_jsonl, score_to_label
+from utils.data_utils import load_jsonl, write_jsonl, score_to_label, get_nested
 
 
 def parse_args():
@@ -36,6 +36,21 @@ def parse_args():
     return p.parse_args()
 
 
+def _normalize_words_align(words_raw: list, text: str, wa_fields: dict) -> list:
+    """Convert JSONL words_align entries to internal format {word, start, end}."""
+    f_s = wa_fields.get("start", "time_s")
+    f_e = wa_fields.get("end", "time_e")
+    f_cs = wa_fields.get("char_start", "char_s")
+    f_ce = wa_fields.get("char_end", "char_e")
+    result = []
+    for w in (words_raw or []):
+        cs = w.get(f_cs)
+        ce = w.get(f_ce)
+        word = text[cs:ce] if (text and cs is not None and ce is not None) else ""
+        result.append({"word": word, "start": w.get(f_s), "end": w.get(f_e)})
+    return result
+
+
 def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
     """
     Two-pass filter:
@@ -45,6 +60,7 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
     """
     f = cfg["filter"]
     fields = cfg["jsonl_fields"]
+    wa_fields = cfg.get("words_align_fields", {})
 
     min_w = f["min_words"]
     max_w = f["max_words"]
@@ -54,6 +70,7 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
     fid = fields["utterance_id"]
     fspk = fields["speaker_id"]
     fsess = fields["session_id"]
+    ftext = fields["text"]
     fwords = fields["words_align"]
     fscore = fields["sentiment_score"]
     flabel = fields["sentiment_label"]
@@ -63,26 +80,28 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
     # Pass 1: word count
     pass1 = []
     for rec in records:
-        words = rec.get(fwords) or []
+        words_raw = get_nested(rec, fwords) or []
+        text = get_nested(rec, ftext, "")
+        words = _normalize_words_align(words_raw, text, wa_fields)
         n_words = len(words)
         if min_w <= n_words <= max_w:
-            # Determine sentiment label (use existing or derive from score)
-            label = rec.get(flabel)
+            label = get_nested(rec, flabel)
             if label is None:
-                score = rec.get(fscore)
+                score = get_nested(rec, fscore)
                 label = score_to_label(float(score)) if score is not None else None
             if label is None:
                 continue
+            score_val = get_nested(rec, fscore)
             pass1.append({
-                "utterance_id": rec.get(fid),
-                "speaker_id": rec.get(fspk),
-                "session_id": rec.get(fsess),
-                "sentiment_score": float(rec.get(fscore, 0.0)),
+                "utterance_id": get_nested(rec, fid),
+                "speaker_id": get_nested(rec, fspk),
+                "session_id": get_nested(rec, fsess),
+                "sentiment_score": float(score_val) if score_val is not None else 0.0,
                 "sentiment_label": label,
                 "n_words": n_words,
                 "words_align": words,
-                "audio": rec.get(faudio),
-                "gender": rec.get(fgender),
+                "audio": get_nested(rec, faudio),
+                "gender": get_nested(rec, fgender),
             })
 
     # Pass 2: speaker coverage

@@ -22,6 +22,18 @@ SENTIMENT_LABELS = [
 SENTIMENT_LABEL_TO_IDX = {l: i for i, l in enumerate(SENTIMENT_LABELS)}
 
 
+def get_nested(rec: dict, path: str, default=None):
+    """Access a nested dict value via dot notation. 'a.b' → rec['a']['b']."""
+    val = rec
+    for part in path.split("."):
+        if not isinstance(val, dict):
+            return default
+        val = val.get(part)
+        if val is None:
+            return default
+    return val
+
+
 def load_jsonl(path: str | Path) -> list[dict]:
     records = []
     with open(path, encoding="utf-8") as f:
