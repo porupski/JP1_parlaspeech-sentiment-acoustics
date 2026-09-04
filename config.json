@@ -83,13 +83,13 @@
     "data_root": "/cache/ivanp/projects/ParlaSpeech_v4/release_v4",
     "jsonl_pattern": "ParlaSpeech-{lang}.v4.0.patched.jsonl",
     "audio_root": {
-      "HR": "/path/to/audio/HR",
-      "CZ": "/path/to/audio/CZ",
-      "PL": "/path/to/audio/PL",
-      "RS": "/path/to/audio/RS",
-      "SI": "/path/to/audio/SI"
+      "HR": "/cache/ivanp/projects/slavic-speech-pipeline/data/unpacked/ParlaSpeech-HR-audio",
+      "CZ": "/cache/ivanp/projects/slavic-speech-pipeline/data/unpacked/ParlaSpeech-CZ-audio",
+      "PL": "/cache/ivanp/projects/slavic-speech-pipeline/data/unpacked/ParlaSpeech-PL-audio",
+      "RS": "/cache/ivanp/projects/slavic-speech-pipeline/data/unpacked/ParlaSpeech-RS-audio",
+      "SI": "/cache/ivanp/projects/ParlaSpeech-SI/raw_data/audio"
     },
-    "_audio_root_note": "Fill in actual paths on gpu2 before running 20_extract_praat.py",
+    "_audio_root_note": "ParlaSpeech v1-v3 audio from slavic-speech-pipeline (used until v4 audio is released). SI audio is separate. Path resolver handles nested part/folder structure automatically.",
     "intermediate_dir": "data/intermediate",
     "results_dir": "results",
     "r_home": "/home/ivan/miniforge3/envs/parla_align4/lib/R",

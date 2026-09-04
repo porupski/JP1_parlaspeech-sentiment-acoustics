@@ -17,11 +17,17 @@ if [ -d "${EXTRACT_DIR}" ]; then
     exit 0
 fi
 
-echo "Downloading NRC-VAD-Lexicon v2.1 to ${DEST_DIR} ..."
-curl -L -o "${DEST_DIR}/${ZIP_NAME}" "${URL}"
+if [ ! -f "${DEST_DIR}/${ZIP_NAME}" ]; then
+    echo "Downloading NRC-VAD-Lexicon v2.1 to ${DEST_DIR} ..."
+    curl -L -o "${DEST_DIR}/${ZIP_NAME}" "${URL}"
+fi
 
-echo "Unzipping ..."
-unzip -q "${DEST_DIR}/${ZIP_NAME}" -d "${DEST_DIR}"
+echo "Extracting ..."
+if command -v 7z >/dev/null 2>&1; then
+    7z x "${DEST_DIR}/${ZIP_NAME}" -o"${DEST_DIR}" -y > /dev/null
+else
+    python3 -c "import zipfile; zipfile.ZipFile('${DEST_DIR}/${ZIP_NAME}').extractall('${DEST_DIR}')"
+fi
 rm "${DEST_DIR}/${ZIP_NAME}"
 
 echo ""

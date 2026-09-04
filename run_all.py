@@ -15,6 +15,7 @@
 #   python run_all.py --dry-run                # filter step only, no writes
 # ============================================================
 
+import os
 import sys
 import argparse
 import subprocess
@@ -56,6 +57,8 @@ def parse_args():
                    help="Stages to skip")
     p.add_argument("--only", nargs="+", default=[], choices=list(STAGES.keys()),
                    help="Run only these stages (overrides --skip)")
+    p.add_argument("--workers", type=int, default=4,
+                   help="Parallel worker processes for Praat/OpenSMILE extraction")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -70,7 +73,11 @@ def run_stage(name: str, script: str, extra_args: list[str]) -> bool:
     return result.returncode == 0
 
 
+WORKER_STAGES = {"praat", "opensmile"}
+
+
 def main():
+    os.nice(19)
     args = parse_args()
     lang_args = (["--langs"] + args.langs) if args.langs else []
 
@@ -82,6 +89,7 @@ def main():
     print(f"\nParlaSpeech Sentiment–Acoustics Pipeline")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Stages:  {' → '.join(order)}")
+    print(f"Workers: {args.workers} (for praat/opensmile stages)")
 
     failed = []
     for name in order:
@@ -89,6 +97,8 @@ def main():
         extra = lang_args.copy()
         if args.dry_run and name == "filter":
             extra.append("--dry-run")
+        if name in WORKER_STAGES:
+            extra += ["--workers", str(args.workers)]
         ok = run_stage(name, script, extra)
         if not ok:
             print(f"\n[ERROR] Stage '{name}' failed. Stopping.")

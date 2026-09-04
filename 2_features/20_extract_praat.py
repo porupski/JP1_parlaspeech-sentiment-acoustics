@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  20_extract_praat.py
 # Release: 1.0
-# Version: v1.00
+# Version: v1.01
 # Purpose: Extract F0 and intensity per utterance via Praat (parselmouth).
 #          Method: word-level median → utterance-level median (paper §3.3).
 #
@@ -12,20 +12,75 @@
 #                   sentiment_score, sentiment_label, n_words,
 #                   f0_raw, intensity_raw
 #
-# NOTE: Audio paths must be set in config.json → paths.audio_root.{lang}
+# NOTE: Audio paths set in config.json → paths.audio_root.{lang}.
+#       Script builds a filename index to handle nested part-folder layouts.
 # NOTE: Gender-specific pitch ranges applied if 'gender' field present in JSONL.
 # ============================================================
 
+import os
 import sys
+import signal
 import argparse
 import pandas as pd
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.config_loader import load_config, get_intermediate_dir, get_audio_root
+from utils.config_loader import (
+    load_config, get_intermediate_dir, get_audio_root,
+    build_audio_index, resolve_audio_path,
+)
 from utils.data_utils import load_jsonl, write_tsv
 from utils.extraction import extract_praat_utterance
+
+
+# Worker-process globals set by _init_worker
+_G_INDEX: dict = {}
+_G_ROOT: "Path | None" = None
+_G_CFG: dict = {}
+
+
+def _init_worker(index: dict, audio_root_str: str, cfg: dict) -> None:
+    global _G_INDEX, _G_ROOT, _G_CFG
+    os.nice(19)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    _G_INDEX = index
+    _G_ROOT = Path(audio_root_str)
+    _G_CFG = cfg
+
+
+def _get_pitch_range(gender: str, cfg: dict) -> tuple:
+    pr = cfg["praat"]
+    g = (gender or "").lower()
+    if g in ("m", "male"):
+        return pr["pitch_floor_male"], pr["pitch_ceiling_male"]
+    if g in ("f", "female"):
+        return pr["pitch_floor_female"], pr["pitch_ceiling_female"]
+    return pr["pitch_floor_default"], pr["pitch_ceiling_default"]
+
+
+def _process_record_worker(rec: dict) -> dict:
+    uid = rec["utterance_id"]
+    null = {"utterance_id": uid, "f0_raw": None, "intensity_raw": None}
+    audio_rel = rec.get("audio")
+    if not audio_rel:
+        return null
+    audio_path = resolve_audio_path(audio_rel, _G_ROOT, _G_INDEX)
+    if audio_path is None:
+        return null
+    pitch_floor, pitch_ceiling = _get_pitch_range(rec.get("gender"), _G_CFG)
+    try:
+        feats = extract_praat_utterance(
+            audio_path=audio_path,
+            words_align=rec.get("words_align", []),
+            pitch_floor=pitch_floor,
+            pitch_ceiling=pitch_ceiling,
+            min_intensity_db=_G_CFG["praat"]["intensity_min_db"],
+        )
+    except Exception:
+        return null
+    return {"utterance_id": uid, **feats}
 
 
 def parse_args():
@@ -33,41 +88,12 @@ def parse_args():
     p.add_argument("--config", default="config.json")
     p.add_argument("--langs", nargs="+", default=None)
     p.add_argument("--workers", type=int, default=4,
-                   help="Parallel workers for audio processing")
+                   help="Parallel worker processes for audio extraction")
     return p.parse_args()
 
 
-def get_pitch_range(gender: str, cfg: dict) -> tuple[float, float]:
-    pr = cfg["praat"]
-    g = (gender or "").lower()
-    if g in ("m", "male"):
-        return pr["pitch_floor_male"], pr["pitch_ceiling_male"]
-    elif g in ("f", "female"):
-        return pr["pitch_floor_female"], pr["pitch_ceiling_female"]
-    return pr["pitch_floor_default"], pr["pitch_ceiling_default"]
-
-
-def process_record(rec: dict, audio_root: Path, cfg: dict) -> dict:
-    audio_rel = rec.get("audio")
-    if audio_rel is None:
-        return {"utterance_id": rec["utterance_id"], "f0_raw": None, "intensity_raw": None}
-
-    audio_path = audio_root / audio_rel
-    if not audio_path.exists():
-        return {"utterance_id": rec["utterance_id"], "f0_raw": None, "intensity_raw": None}
-
-    pitch_floor, pitch_ceiling = get_pitch_range(rec.get("gender"), cfg)
-    feats = extract_praat_utterance(
-        audio_path=audio_path,
-        words_align=rec.get("words_align", []),
-        pitch_floor=pitch_floor,
-        pitch_ceiling=pitch_ceiling,
-        min_intensity_db=cfg["praat"]["intensity_min_db"],
-    )
-    return {"utterance_id": rec["utterance_id"], **feats}
-
-
 def main():
+    os.nice(19)
     args = parse_args()
     cfg = load_config(args.config)
     langs = args.langs or cfg["languages"]
@@ -81,30 +107,54 @@ def main():
 
         records = load_jsonl(in_path)
         audio_root = get_audio_root(cfg, lang)
-        print(f"\n[{lang}] Extracting Praat features from {len(records):,} utterances ...")
-        print(f"  Audio root: {audio_root}")
+        print(f"\n[{lang}] Building audio index from {audio_root} ...")
+        index = build_audio_index(audio_root)
+        print(f"[{lang}] Index: {len(index):,} audio files")
+        print(f"[{lang}] Extracting Praat features from {len(records):,} utterances "
+              f"({args.workers} workers) ...")
 
+        if args.workers <= 1:
+            # Single-process: set globals directly
+            global _G_INDEX, _G_ROOT, _G_CFG
+            _G_INDEX = index
+            _G_ROOT = audio_root
+            _G_CFG = cfg
+            feats_list = [_process_record_worker(r) for r in tqdm(records, desc=lang)]
+        else:
+            with ProcessPoolExecutor(
+                max_workers=args.workers,
+                initializer=_init_worker,
+                initargs=(index, str(audio_root), cfg),
+            ) as pool:
+                feats_list = list(tqdm(
+                    pool.map(_process_record_worker, records, chunksize=50),
+                    total=len(records),
+                    desc=lang,
+                ))
+
+        meta_by_uid = {r["utterance_id"]: r for r in records}
         rows = []
-        for rec in tqdm(records, desc=lang):
-            meta = {
-                "utterance_id": rec["utterance_id"],
+        for feats in feats_list:
+            uid = feats["utterance_id"]
+            rec = meta_by_uid[uid]
+            rows.append({
+                "utterance_id": uid,
                 "speaker_id": rec["speaker_id"],
                 "session_id": rec.get("session_id"),
                 "language": lang,
                 "sentiment_score": rec["sentiment_score"],
                 "sentiment_label": rec["sentiment_label"],
                 "n_words": rec["n_words"],
-            }
-            feats = process_record(rec, audio_root, cfg)
-            rows.append({**meta, **feats})
+                "f0_raw": feats["f0_raw"],
+                "intensity_raw": feats["intensity_raw"],
+            })
 
         df = pd.DataFrame(rows)
-        n_valid_f0 = df["f0_raw"].notna().sum()
-        n_valid_int = df["intensity_raw"].notna().sum()
-        print(f"  F0 valid: {n_valid_f0:,}/{len(df):,} "
-              f"({100*n_valid_f0/len(df):.1f}%)")
-        print(f"  Intensity valid: {n_valid_int:,}/{len(df):,} "
-              f"({100*n_valid_int/len(df):.1f}%)")
+        n_f0 = df["f0_raw"].notna().sum()
+        n_int = df["intensity_raw"].notna().sum()
+        n = len(df)
+        print(f"  F0 valid:        {n_f0:,}/{n:,} ({100*n_f0/n:.1f}%)")
+        print(f"  Intensity valid: {n_int:,}/{n:,} ({100*n_int/n:.1f}%)")
 
         out = idir / f"{lang}_praat.tsv"
         write_tsv(df, out)
