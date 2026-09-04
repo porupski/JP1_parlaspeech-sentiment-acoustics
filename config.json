@@ -1,0 +1,112 @@
+{
+  "_comment": "Master config for parlaspeech-sentiment-acoustics pipeline. All constants, paths, and flags live here.",
+  "version": "1.0",
+  "seed": 42,
+
+  "languages": ["HR", "CZ", "PL", "RS", "SI"],
+  "parlaspeech_version": "4.0",
+
+  "filter": {
+    "min_words": 10,
+    "max_words": 40,
+    "min_instances_per_label": 10,
+    "n_sentiment_labels": 6,
+    "sentiment_labels": ["Negative", "Mixed Negative", "Neutral Negative", "Neutral Positive", "Mixed Positive", "Positive"],
+    "n_pairs_h1": 10
+  },
+
+  "analysis": {
+    "n_bins": 60,
+    "sentiment_min": 0.0,
+    "sentiment_max": 5.0,
+    "split_point": null,
+    "_split_point_note": "null = auto-detected from global trend minimum on v4 data. Set a float to override.",
+    "global_trend_weighting": "equal_language",
+    "_global_trend_weighting_note": "equal_language: each language contributes equally regardless of speaker count. weighted_speaker: pool all speaker curves.",
+    "bh_alpha": 0.05,
+    "bootstrap_n": 1000,
+    "bootstrap_ci_level": 0.95,
+    "enable_gamm": false,
+    "enable_opensmile": true,
+    "enable_text_vad": true,
+    "enable_audio_vad": false,
+    "kendall_on_bins": true,
+    "_kendall_on_bins_note": "true = Kendall per speaker on 60 bin means (matches caption). false = Kendall on raw utterances. See CODE_AUDIT §7.1.",
+    "features_main": ["f0_raw", "intensity_norm", "speechrate_wps"],
+    "features_appendix": ["f0_norm", "intensity_raw", "speechrate_sps"],
+    "feature_display_names": {
+      "f0_raw": "F0 (pitch)",
+      "f0_norm": "F0 norm",
+      "intensity_raw": "Intensity (raw)",
+      "intensity_norm": "Intensity",
+      "speechrate_wps": "Speech rate",
+      "speechrate_sps": "Speech rate (syl)"
+    }
+  },
+
+  "praat": {
+    "time_step": 0.01,
+    "pitch_floor_male": 75,
+    "pitch_ceiling_male": 300,
+    "pitch_floor_female": 100,
+    "pitch_ceiling_female": 500,
+    "pitch_floor_default": 75,
+    "pitch_ceiling_default": 600,
+    "intensity_min_db": 50
+  },
+
+  "vad": {
+    "nrc_vad_path": "data/lexicons/NRC-VAD-Lexicon-v2.1/NRC-VAD-Lexicon.txt",
+    "_nrc_vad_note": "Run bash 0_env/get_nrc_vad.sh to download v2.1 automatically. Adjust filename if the zip extracts differently.",
+    "nrc_lang_codes": {
+      "HR": "Croatian",
+      "CZ": "Czech",
+      "PL": "Polish",
+      "RS": "Serbian",
+      "SI": "Slovene"
+    },
+    "audio_vad_model": "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
+    "vad_corr_method": "spearman"
+  },
+
+  "plots": {
+    "figure_width_landscape": 18,
+    "figure_height_per_row": 3.2,
+    "font_scale": 1.0,
+    "dpi": 300,
+    "format": "png",
+    "panel_hspace": 0.35,
+    "panel_wspace": 0.25
+  },
+
+  "paths": {
+    "data_root": "/cache/ivanp/projects/ParlaSpeech_v4/release_v4",
+    "jsonl_pattern": "ParlaSpeech-{lang}.v4.0.patched.jsonl",
+    "audio_root": {
+      "HR": "/path/to/audio/HR",
+      "CZ": "/path/to/audio/CZ",
+      "PL": "/path/to/audio/PL",
+      "RS": "/path/to/audio/RS",
+      "SI": "/path/to/audio/SI"
+    },
+    "_audio_root_note": "Fill in actual paths on gpu2 before running 20_extract_praat.py",
+    "intermediate_dir": "data/intermediate",
+    "results_dir": "results",
+    "r_home": "/home/ivan/miniforge3/envs/parla_align4/lib/R",
+    "r_libs": "/home/ivan/R/x86_64-conda-linux-gnu-library/4.4"
+  },
+
+  "jsonl_fields": {
+    "_note": "Map from internal names to actual ParlaSpeech v4 JSONL field names. Adjust if v4 uses different names.",
+    "utterance_id": "id",
+    "speaker_id": "speaker_id",
+    "session_id": "speech_id",
+    "text": "text",
+    "words_align": "words_align",
+    "sentiment_score": "sentiment_score",
+    "sentiment_label": "sentiment_label",
+    "audio_path": "audio",
+    "n_words": "n_words",
+    "gender": "gender"
+  }
+}
