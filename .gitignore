@@ -1,0 +1,28 @@
+# --- data (large files, not committed) ---
+data/intermediate/
+data/lexicons/
+
+# --- generated pipeline outputs ---
+results/tables/
+results/figures/
+results/*.json
+
+# --- jupytext-generated notebooks (source is the .py file) ---
+*.ipynb
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# --- editors / OS ---
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/

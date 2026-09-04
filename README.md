@@ -14,8 +14,8 @@ This repository contains the analysis code for "From Vocal Cues to Political Vie
 ### 1. Create the conda environment
 
 ```bash
-conda env create -f 0_env/environment.yml
-conda activate jp1_ps_sent
+mamba env create -f 0_env/environment.yml
+mamba activate jp1_ps_sent
 ```
 
 ### 2. Download the NRC VAD Lexicon

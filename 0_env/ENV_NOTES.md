@@ -15,7 +15,7 @@ Key packages and why:
 
 ## R packages
 
-Not managed by conda. Install manually inside the env:
+Not managed by mamba. Install manually inside the env:
 
 ```r
 install.packages(c("mgcv", "ordinal"))
@@ -26,8 +26,8 @@ R home is hardcoded in config.json → paths.r_home. Adjust to your env path.
 ## Setup
 
 ```bash
-conda env create -f 0_env/environment.yml
-conda activate jp1_ps_sent
+mamba env create -f 0_env/environment.yml
+mamba activate jp1_ps_sent
 ```
 
 ## Praat
