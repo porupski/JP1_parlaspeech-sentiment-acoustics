@@ -52,19 +52,27 @@
     "pitch_ceiling_female": 500,
     "pitch_floor_default": 75,
     "pitch_ceiling_default": 600,
-    "intensity_min_db": 50
+    "intensity_min_db": 50,
+    "formant_n_samples": 5,
+    "_formant_n_samples_note": "Number of time-sample points per word for formant extraction.",
+    "formant_max_hz": 5500.0,
+    "save_envelopes": true,
+    "_save_envelopes_note": "Write {lang}_praat_envelopes.npz alongside TSV. Contains raw F0/intensity tracks and per-word arrays. Toggle off before shipping to save runtime."
   },
 
   "vad": {
-    "nrc_vad_path": "data/lexicons/NRC-VAD-Lexicon-v2.1/NRC-VAD-Lexicon-v2.1.txt",
-    "_nrc_vad_note": "Run bash 0_env/get_nrc_vad.sh to download v2.1 automatically. Adjust filename if the zip extracts differently.",
+    "nrc_vad_dir": "data/lexicons/NRC-VAD-Lexicon/NRC-VAD-Lexicon/OneFilePerLanguage",
+    "_nrc_vad_dir_note": "NRC-VAD-Lexicon v1 OneFilePerLanguage dir (nested inside zip extraction). File pattern: {LangName}-NRC-VAD-Lexicon.txt. Run bash 0_env/get_nrc_vad.sh to download. Columns: English Word | Valence | Arousal | Dominance | {Lang} Word. Lookup key = translated word (last column). Extraction lands at data/lexicons/NRC-VAD-Lexicon/NRC-VAD-Lexicon/ (double-nested from zip).",
     "nrc_lang_codes": {
       "HR": "Croatian",
       "CZ": "Czech",
       "PL": "Polish",
-      "RS": "Serbian",
-      "SI": "Slovene"
+      "RS": "Bosnian",
+      "_RS_note": "Serbian NRC file is Cyrillic; ParlaSpeech RS is Latin script. Using Bosnian (Latin, mutually intelligible) as proxy. Note in §3.3 limitations.",
+      "SI": "Slovenian"
     },
+    "vad_content_upos": ["NOUN", "VERB", "ADJ", "ADV"],
+    "_vad_content_upos_note": "UPOS tags considered content words for VAD lookup. Filtering to these improves signal by excluding function words not in the lexicon.",
     "audio_vad_model": "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
     "vad_corr_method": "spearman"
   },

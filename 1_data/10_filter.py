@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  10_filter.py
 # Release: 1.0
-# Version: v1.00
+# Version: v1.01
 # Purpose: Filter ParlaSpeech v4 JSONL by word count and speaker
 #          sentiment coverage. Outputs one compact JSONL per language.
 #
@@ -107,6 +107,8 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
                 "words_align": words,
                 "audio": get_nested(rec, faudio),
                 "gender": get_nested(rec, fgender),
+                "silent_pauses": rec.get("silent_pauses") or [],
+                "filled_pauses": rec.get("filled_pauses") or [],
             })
 
     # Pass 2: speaker coverage

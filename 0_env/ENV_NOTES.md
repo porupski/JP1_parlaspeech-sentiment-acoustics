@@ -44,13 +44,30 @@ Speech rate (`21_extract_speechrate.py`) does NOT need audio — only the JSONL 
 
 ## NRC VAD Lexicon
 
-Download from: https://saifmohammad.com/WebPages/nrclex.html
-→ NRC-VAD-Lexicon.zip → NRC-VAD-Lexicon.txt
+Use **v1 (multilingual)** — NOT v2.1 (English-only). Run:
 
-Set path in `config.json → vad.nrc_vad_path`.
+```bash
+bash 0_env/get_nrc_vad.sh
+```
 
-The file includes ~20,000 English words with valence/arousal/dominance scores
-plus translations to 100+ languages via automated translation.
-Relevant column names for our languages:
-  Croatian, Czech, Polish, Serbian, Slovene
-(match to config.json → vad.nrc_lang_codes)
+This downloads from `https://saifmohammad.com/WebDocs/Lexicons/NRC-VAD-Lexicon.zip`
+and extracts to `data/lexicons/NRC-VAD-Lexicon/`.
+
+Due to the zip's internal structure, per-language files land at:
+  `data/lexicons/NRC-VAD-Lexicon/NRC-VAD-Lexicon/OneFilePerLanguage/`
+
+This double-nested path is already set in `config.json → vad.nrc_vad_dir`.
+
+File format (per language): `{LangName}-NRC-VAD-Lexicon.txt`
+Columns (tab-separated): `English Word | Valence | Arousal | Dominance | Translated Word`
+Lookup key = translated word (last column); VAD scores from English-annotated entry.
+
+Language files used:
+  HR → Croatian-NRC-VAD-Lexicon.txt
+  CZ → Czech-NRC-VAD-Lexicon.txt
+  PL → Polish-NRC-VAD-Lexicon.txt
+  RS → Bosnian-NRC-VAD-Lexicon.txt  ← proxy! Serbian file is Cyrillic, corpus is Latin
+  SI → Slovenian-NRC-VAD-Lexicon.txt
+
+VAD lookup uses lemmas from v4 JSONL `linguistic_annotation` field (UPOS: NOUN/VERB/ADJ/ADV).
+No separate lemmatizer needed.

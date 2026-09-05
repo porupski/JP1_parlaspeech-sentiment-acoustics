@@ -2,15 +2,16 @@
 # ============================================================
 # Script:  21_extract_speechrate.py
 # Release: 1.0
-# Version: v1.00
-# Purpose: Compute speech rate features from word-level timing in the
-#          filtered JSONL (no audio needed).
+# Version: v1.01
+# Purpose: Compute speech rate and pause features from word-level timing.
+#          No audio needed — uses alignment data from filtered JSONL.
 #
 # Input:   {intermediate_dir}/{lang}_filtered.jsonl
 # Output:  {intermediate_dir}/{lang}_speechrate.tsv
-#          Columns: utterance_id, n_words, n_syllables,
-#                   duration_total, duration_speech, pause_ratio,
-#                   speechrate_wps, speechrate_sps
+#
+# v1.01: Added pause breakdown from v4 silent_pauses + filled_pauses tiers.
+#        pause_ratio renamed to pause_ratio_all (old formula).
+#        pause_ratio_silent (confirmed silent pause duration / total) is new main metric.
 # ============================================================
 
 import sys
@@ -48,17 +49,25 @@ def main():
         print(f"\n[{lang}] Computing speech rate for {len(records):,} utterances ...")
 
         if not records:
-            print(f"  [SKIP] No records after filter — skipping.")
+            print(f"  [SKIP] No records.")
             continue
 
         rows = []
         for rec in tqdm(records, desc=lang):
-            feats = extract_speechrate_utterance(rec.get("words_align", []), lang)
+            feats = extract_speechrate_utterance(
+                words_align=rec.get("words_align", []),
+                lang=lang,
+                silent_pauses=rec.get("silent_pauses"),
+                filled_pauses=rec.get("filled_pauses"),
+            )
             rows.append({"utterance_id": rec["utterance_id"], **feats})
 
         df = pd.DataFrame(rows)
-        n_valid = df["speechrate_wps"].notna().sum() if "speechrate_wps" in df.columns else 0
-        print(f"  speechrate_wps valid: {n_valid:,}/{len(df):,}")
+        n = len(df)
+        print(f"  speechrate_wps valid:     {df['speechrate_wps'].notna().sum():,}/{n:,}")
+        print(f"  pause_ratio_silent valid: {df['pause_ratio_silent'].notna().sum():,}/{n:,}")
+        print(f"  n_silent_pauses mean:     {df['n_silent_pauses'].mean():.2f}")
+        print(f"  n_filled_pauses mean:     {df['n_filled_pauses'].mean():.2f}")
 
         out = idir / f"{lang}_speechrate.tsv"
         write_tsv(df, out)
