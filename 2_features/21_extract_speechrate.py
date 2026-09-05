@@ -47,13 +47,17 @@ def main():
         records = load_jsonl(in_path)
         print(f"\n[{lang}] Computing speech rate for {len(records):,} utterances ...")
 
+        if not records:
+            print(f"  [SKIP] No records after filter — skipping.")
+            continue
+
         rows = []
         for rec in tqdm(records, desc=lang):
             feats = extract_speechrate_utterance(rec.get("words_align", []), lang)
             rows.append({"utterance_id": rec["utterance_id"], **feats})
 
         df = pd.DataFrame(rows)
-        n_valid = df["speechrate_wps"].notna().sum()
+        n_valid = df["speechrate_wps"].notna().sum() if "speechrate_wps" in df.columns else 0
         print(f"  speechrate_wps valid: {n_valid:,}/{len(df):,}")
 
         out = idir / f"{lang}_speechrate.tsv"

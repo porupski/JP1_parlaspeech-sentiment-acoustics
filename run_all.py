@@ -22,6 +22,9 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
+# Force line-buffered stdout so output appears in real time when piped to tee
+sys.stdout.reconfigure(line_buffering=True)
+
 
 STAGES = {
     "filter":     ("1_data/10_filter.py",           "Filter JSONL by word count + speaker coverage"),
@@ -64,11 +67,11 @@ def parse_args():
 
 
 def run_stage(name: str, script: str, extra_args: list[str]) -> bool:
-    cmd = [sys.executable, script, "--config", "config.json"] + extra_args
+    cmd = [sys.executable, "-u", script, "--config", "config.json"] + extra_args
     print(f"\n{'='*60}")
-    print(f"STAGE: {name.upper()}")
+    print(f"STAGE: {name.upper()}  [{datetime.now().strftime('%H:%M:%S')}]")
     print(f"CMD:   {' '.join(cmd)}")
-    print(f"{'='*60}")
+    print(f"{'='*60}", flush=True)
     result = subprocess.run(cmd, cwd=Path(__file__).parent)
     return result.returncode == 0
 

@@ -79,20 +79,25 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
 
     # Pass 1: word count
     pass1 = []
+    n_no_words = 0
+    n_no_label = 0
     for rec in records:
         words_raw = get_nested(rec, fwords) or []
         text = get_nested(rec, ftext, "")
         words = _normalize_words_align(words_raw, text, wa_fields)
         n_words = len(words)
-        if min_w <= n_words <= max_w:
-            label = get_nested(rec, flabel)
-            if label is None:
-                score = get_nested(rec, fscore)
-                label = score_to_label(float(score)) if score is not None else None
-            if label is None:
-                continue
-            score_val = get_nested(rec, fscore)
-            pass1.append({
+        if not (min_w <= n_words <= max_w):
+            n_no_words += 1
+            continue
+        label = get_nested(rec, flabel)
+        if label is None:
+            score = get_nested(rec, fscore)
+            label = score_to_label(float(score)) if score is not None else None
+        if label is None:
+            n_no_label += 1
+            continue
+        score_val = get_nested(rec, fscore)
+        pass1.append({
                 "utterance_id": get_nested(rec, fid),
                 "speaker_id": get_nested(rec, fspk),
                 "session_id": get_nested(rec, fsess),
@@ -122,6 +127,8 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
         "after_speaker_filter": len(filtered),
         "valid_speakers": len(valid_speakers),
         "total_speakers_pass1": len(spk_label_counts),
+        "dropped_word_count": n_no_words,
+        "dropped_no_label": n_no_label,
     }
     return filtered, stats
 
@@ -140,7 +147,9 @@ def main():
         print(f"[{lang}] {len(records):,} raw utterances")
 
         filtered, stats = filter_language(records, cfg)
-        print(f"[{lang}] After word filter:    {stats['after_word_filter']:,}")
+        print(f"[{lang}] After word filter:    {stats['after_word_filter']:,}"
+              f"  (dropped word-count: {stats['dropped_word_count']:,}"
+              f"  no-label: {stats['dropped_no_label']:,})")
         print(f"[{lang}] After speaker filter: {stats['after_speaker_filter']:,} "
               f"({stats['valid_speakers']} speakers)")
 
