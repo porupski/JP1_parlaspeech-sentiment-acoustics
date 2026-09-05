@@ -97,12 +97,12 @@
   },
 
   "jsonl_fields": {
-    "_note": "Map internal names to ParlaSpeech v4 JSONL field names. Use dot notation for nested fields (e.g. 'a.b' accesses rec['a']['b']).",
+    "_note": "Map internal names to ParlaSpeech v4 JSONL field names. Use dot notation for nested fields (e.g. 'a.b' accesses rec['a']['b']). words_align points to 'words' (basic forced-alignment tier, present for all languages) not 'words_align' (grapheme-level, only HR+RS). Timing is less precise but cross-linguistically comparable.",
     "utterance_id": "id",
     "speaker_id": "speaker_info.Speaker_ID",
     "session_id": "speaker_info.Text_ID",
     "text": "text",
-    "words_align": "words_align",
+    "words_align": "words",
     "sentiment_score": "sentiment.ParlaSent_logit",
     "sentiment_label": "sentiment.ParlaSent_6",
     "audio_path": "audio",
