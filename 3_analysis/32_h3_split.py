@@ -35,22 +35,27 @@ def parse_args():
 
 
 def build_global_trend(lang_curves: dict, features: list[str],
-                        n_bins: int, weighting: str = "equal_language") -> pd.Series:
+                        n_bins: int, weighting: str = "equal_language"
+                        ) -> "tuple[pd.Series, pd.Series]":
     """
-    Build global trend curve:
-      - Per speaker per feature: min-max normalise the 60-bin curve
-      - Average normalised curves across speakers (equal per speaker within language)
-      - Average across languages (equal per language if weighting='equal_language')
-    Returns Series indexed by bin (0..n_bins-1).
+    Build global trend curve (both weighting schemes in one pass).
 
-    lang_curves: {lang: {feat: pd.DataFrame(index=bin, cols=features)}}
+    Returns (equal_language_series, weighted_speaker_series), both indexed 0..n_bins-1.
+
+    equal_language:   each language contributes equally (mean of per-language means)
+    weighted_speaker: pool all normalised speaker curves across languages before averaging
+                      (larger languages contribute proportionally more)
+
+    lang_curves: {lang: {spk_id: DataFrame(index=bin, cols=features)}}
     """
     lang_trends = {}
-    for lang, feat_curves in lang_curves.items():
+    all_spk_curves: list[np.ndarray] = []   # for weighted_speaker
+
+    for lang, spk_curves in lang_curves.items():
         all_normalised = []
         for feat in features:
             spk_normalised = []
-            for spk_id, curve_df in feat_curves.items():
+            for spk_id, curve_df in spk_curves.items():
                 if feat not in curve_df.columns:
                     continue
                 y = curve_df[feat].reindex(range(n_bins)).values.astype(float)
@@ -62,20 +67,21 @@ def build_global_trend(lang_curves: dict, features: list[str],
                     continue
                 y_norm = (y - ymin) / (ymax - ymin)
                 spk_normalised.append(y_norm)
+                all_spk_curves.append(y_norm)   # pool for weighted_speaker
             if spk_normalised:
                 all_normalised.append(np.nanmean(spk_normalised, axis=0))
         if all_normalised:
             lang_trends[lang] = np.nanmean(all_normalised, axis=0)
 
+    nan_series = pd.Series(np.nan, index=range(n_bins))
+
     if not lang_trends:
-        return pd.Series(np.nan, index=range(n_bins))
+        return nan_series, nan_series
 
-    if weighting == "equal_language":
-        global_mean = np.nanmean(list(lang_trends.values()), axis=0)
-    else:  # weighted_speaker — fall back to equal_language, noted in output
-        global_mean = np.nanmean(list(lang_trends.values()), axis=0)
+    eq_mean = np.nanmean(list(lang_trends.values()), axis=0)
+    wt_mean = np.nanmean(all_spk_curves, axis=0) if all_spk_curves else eq_mean
 
-    return pd.Series(global_mean, index=range(n_bins))
+    return pd.Series(eq_mean, index=range(n_bins)), pd.Series(wt_mean, index=range(n_bins))
 
 
 def main():
@@ -118,11 +124,12 @@ def main():
             spk_curves[spk] = pd.DataFrame(curve_row).T
         lang_curves[lang] = spk_curves
 
-    # Build global trend
-    print(f"\nBuilding global trend (weighting={weighting}) ...")
-    global_trend = build_global_trend(lang_curves, features, n_bins, weighting)
+    # Build global trend — both weighting schemes in one pass
+    print(f"\nBuilding global trend (primary: {weighting}) ...")
+    gt_equal, gt_weighted = build_global_trend(lang_curves, features, n_bins, weighting)
+    global_trend = gt_equal if weighting == "equal_language" else gt_weighted
 
-    # Find split point
+    # Find split point (always from the primary weighting curve)
     if override_split is not None:
         split_point = float(override_split)
         print(f"Using config override split point: {split_point}")
@@ -130,16 +137,24 @@ def main():
         split_bin = int(np.nanargmin(global_trend.values))
         split_point = s_min + (split_bin + 0.5) * (s_max - s_min) / n_bins
         print(f"Detected split point: {split_point:.3f} (bin {split_bin})")
+        # Also report weighted_speaker minimum for comparison
+        wt_min_bin = int(np.nanargmin(gt_weighted.values))
+        wt_split = s_min + (wt_min_bin + 0.5) * (s_max - s_min) / n_bins
+        print(f"  weighted_speaker minimum:  {wt_split:.3f} (bin {wt_min_bin})")
 
     split_bin = int((split_point - s_min) / (s_max - s_min) * n_bins)
     split_bin = max(5, min(split_bin, n_bins - 6))  # guard against edge bins
 
-    # Save global trend
+    def _series_to_list(s):
+        return [None if np.isnan(v) else float(v) for v in s.values]
+
+    # Save global trend (both curves)
     global_out = rdir / "global_trend.json"
     with open(global_out, "w") as f:
         json.dump({
             "bins": list(range(n_bins)),
-            "values": [None if np.isnan(v) else float(v) for v in global_trend.values],
+            "values": _series_to_list(gt_equal),
+            "values_weighted_speaker": _series_to_list(gt_weighted),
             "split_bin": split_bin,
             "split_point": split_point,
             "weighting": weighting,

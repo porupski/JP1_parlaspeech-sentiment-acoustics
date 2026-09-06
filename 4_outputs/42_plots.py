@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  42_plots.py
 # Release: 1.0
-# Version: v1.00
+# Version: v1.10
 # Purpose: Generate all paper figures from analysis results.
 #          Reads defaults from config.json.
 #          For editorial control, use 42_plots_editorial.py instead.
@@ -11,6 +11,9 @@
 #          {results_dir}/figures/fig2_trends.png
 #          {results_dir}/figures/fig3_global.png
 #          {results_dir}/figures/fig4_diagnostic.png
+#          {results_dir}/figures/fig_lang_overlay.png  (per-language colored curves)
+#
+# v1.10: Added fig_lang_overlay. Fig 1 now uses BH p-values, hatch, p annotations.
 # ============================================================
 
 import sys
@@ -25,7 +28,8 @@ from utils.config_loader import load_config, get_results_dir, get_intermediate_d
 from utils.data_utils import compute_bins, speaker_binned_means
 from utils.plotting import (
     plot_concordance_bars, plot_trend_curves,
-    plot_global_trend, plot_diagnostic_split, save_fig, LANG_ORDER
+    plot_global_trend, plot_diagnostic_split, plot_lang_overlay,
+    save_fig, LANG_ORDER
 )
 
 
@@ -96,13 +100,38 @@ def main():
     # Fig 3 — Global trend
     print("Fig 3: global trend ...")
     if gt_data:
+        bins_idx = gt_data.get("bins", range(cfg["analysis"]["n_bins"]))
         gt_series = pd.Series(
             [np.nan if v is None else v for v in gt_data.get("values", [])],
-            index=gt_data.get("bins", range(cfg["analysis"]["n_bins"]))
+            index=bins_idx,
         )
         fig3 = plot_global_trend(gt_series, split_point=split_point,
                                   sentiment_min=s_min, sentiment_max=s_max)
         save_fig(fig3, fdir / "fig3_global.png", dpi=dpi)
+
+        # If weighted_speaker curve is also saved, overlay both
+        if "values_weighted_speaker" in gt_data:
+            gt_weighted = pd.Series(
+                [np.nan if v is None else v for v in gt_data["values_weighted_speaker"]],
+                index=bins_idx,
+            )
+            import matplotlib.pyplot as _plt
+            fig3b, ax3b = _plt.subplots(figsize=(10, 4))
+            x = np.linspace(s_min, s_max, len(gt_series))
+            ax3b.plot(x, gt_series.values, lw=2.0, color="#F4A261", label="Equal language")
+            ax3b.plot(x, gt_weighted.values, lw=2.0, color="#457B9D", ls="--",
+                      label="Weighted speaker")
+            ax3b.axvline(split_point, color="#9B5DE5", lw=1.5, ls="--",
+                         label=f"Split = {split_point:.2f}")
+            ax3b.set_xlabel("Sentiment", fontsize=10)
+            ax3b.set_ylabel("Normalised feature value (avg.)", fontsize=10)
+            ax3b.set_title("Global Trend — Weighting Comparison", fontsize=12)
+            ax3b.legend(fontsize=9)
+            ax3b.tick_params(labelsize=9)
+            fig3b.tight_layout()
+            from utils.plotting import save_fig as _save
+            _save(fig3b, fdir / "fig3_global_weights.png", dpi=dpi)
+            print("  fig3_global_weights.png saved")
 
     # Fig 4 — Diagnostic split
     print("Fig 4: diagnostic split ...")
@@ -114,6 +143,13 @@ def main():
                                   languages=langs, features=feats,
                                   sentiment_min=s_min, sentiment_max=s_max)
     save_fig(fig4, fdir / "fig4_diagnostic.png", dpi=dpi)
+
+    # Fig 5 — Per-language overlay (diagnostic: shows which language dominates)
+    print("Fig 5: per-language overlay ...")
+    fig5 = plot_lang_overlay(binned, languages=langs, features=feats,
+                              sentiment_min=s_min, sentiment_max=s_max,
+                              split_point=split_point)
+    save_fig(fig5, fdir / "fig_lang_overlay.png", dpi=dpi)
 
     print(f"\nAll figures → {fdir}")
 
