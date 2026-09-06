@@ -63,8 +63,8 @@
   },
 
   "vad": {
-    "nrc_vad_dir": "data/lexicons/NRC-VAD-Lexicon/NRC-VAD-Lexicon/OneFilePerLanguage",
-    "_nrc_vad_dir_note": "NRC-VAD-Lexicon v1 OneFilePerLanguage dir (nested inside zip extraction). File pattern: {LangName}-NRC-VAD-Lexicon.txt. Run bash 0_env/get_nrc_vad.sh to download. Columns: English Word | Valence | Arousal | Dominance | {Lang} Word. Lookup key = translated word (last column). Extraction lands at data/lexicons/NRC-VAD-Lexicon/NRC-VAD-Lexicon/ (double-nested from zip).",
+    "nrc_vad_dir": "data/lexicons/NRC-VAD-Lexicon/OneFilePerLanguage",
+    "_nrc_vad_dir_note": "NRC-VAD-Lexicon v1 OneFilePerLanguage dir. File pattern: {LangName}-NRC-VAD-Lexicon.txt. Run bash 0_env/get_nrc_vad.sh to download. Columns: English Word | Valence | Arousal | Dominance | {Lang} Word. Lookup key = translated word (last column). Zip may extract with different nesting on different OS; adjust this path if needed.",
     "nrc_lang_codes": {
       "HR": "Croatian",
       "CZ": "Czech",
@@ -74,6 +74,8 @@
       "SI": "Slovenian"
     },
     "vad_content_upos": ["NOUN", "VERB", "ADJ", "ADV"],
+    "save_vad_envelopes": true,
+    "_save_vad_envelopes_note": "Save per-word VAD arrays to {lang}_vad_envelopes.npz. Keys: utterance_ids, word_starts, word_ends, word_valences, word_arousals, word_dominances. NaN where word not covered by lexicon (non-content-UPOS or OOV).",
     "_vad_content_upos_note": "UPOS tags considered content words for VAD lookup. Filtering to these improves signal by excluding function words not in the lexicon.",
     "audio_vad_model": "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim",
     "vad_corr_method": "spearman"

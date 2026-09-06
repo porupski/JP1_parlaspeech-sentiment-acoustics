@@ -30,6 +30,21 @@ mamba env create -f 0_env/environment.yml
 mamba activate jp1_ps_sent
 ```
 
+## Notebooks
+
+Exploration notebooks live in `5_debug/`. Each ships as both `.py` (jupytext
+`# %%` format) and `.ipynb`. Open either in VS Code Jupyter extension directly.
+
+To re-sync after editing the `.py` file:
+```bash
+jupytext --to notebook 5_debug/50_explore.py -o 5_debug/50_explore.ipynb
+```
+
+To sync changes made in the `.ipynb` back to `.py`:
+```bash
+jupytext --to py:percent 5_debug/50_explore.ipynb -o 5_debug/50_explore.py
+```
+
 ## Praat
 
 No separate Praat installation needed — parselmouth bundles it.

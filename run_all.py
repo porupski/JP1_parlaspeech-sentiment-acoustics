@@ -76,7 +76,7 @@ def run_stage(name: str, script: str, extra_args: list[str]) -> bool:
     return result.returncode == 0
 
 
-WORKER_STAGES = {"praat", "opensmile"}
+WORKER_STAGES = {"praat", "opensmile", "vad"}
 NO_LANG_STAGES = {"corrections", "tables", "numbers", "plots"}
 
 
@@ -96,7 +96,7 @@ def main():
     print(f"\nParlaSpeech Sentiment–Acoustics Pipeline")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Stages:  {' → '.join(order)}")
-    print(f"Workers: {args.workers} (for praat/opensmile stages)")
+    print(f"Workers: {args.workers} (for praat/opensmile/vad stages)")
 
     failed = []
     for name in order:

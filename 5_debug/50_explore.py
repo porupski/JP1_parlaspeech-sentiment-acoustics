@@ -155,6 +155,88 @@ else:
         plt.show()
 
 # %% [markdown]
+# ## Cell 2b — VAD Word Envelope Viewer
+#
+# Loads `{LANG}_vad_envelopes.npz` and plots per-word valence/arousal/dominance
+# for N random utterances. NaN = word not in lexicon (non-content UPOS or OOV).
+# Aligned to word timing from v4 words[], same x-axis as F0 envelopes.
+
+# %%
+vad_npz_path = idir / f"{LANG}_vad_envelopes.npz"
+vad_tsv_path = idir / f"{LANG}_vad.tsv"
+
+if not vad_npz_path.exists():
+    print(f"[SKIP] {vad_npz_path} not found. Run 35_vad.py with save_vad_envelopes=true.")
+else:
+    vdata = np.load(vad_npz_path, allow_pickle=True)
+    vad_uids = list(vdata["utterance_ids"])
+    vuid2idx = {uid: i for i, uid in enumerate(vad_uids)}
+
+    # Load utterance-level VAD scores for metadata
+    df_vad = pd.read_csv(vad_tsv_path, sep="\t") if vad_tsv_path.exists() else pd.DataFrame()
+    uid2vad = {}
+    if not df_vad.empty:
+        for _, row in df_vad.iterrows():
+            uid2vad[row["utterance_id"]] = row
+
+    # Sample utterances with ≥1 covered word
+    candidates_v = [
+        uid for uid in vad_uids
+        if np.any(~np.isnan(vdata["word_valences"][vuid2idx[uid]].astype(float)))
+    ]
+    sample_v_uids = rng.sample(candidates_v, min(N_EXAMPLES, len(candidates_v)))
+
+    for uid in sample_v_uids:
+        i = vuid2idx[uid]
+        starts    = vdata["word_starts"][i].astype(float)
+        ends      = vdata["word_ends"][i].astype(float)
+        valences  = vdata["word_valences"][i].astype(float)
+        arousals  = vdata["word_arousals"][i].astype(float)
+        dominances = vdata["word_dominances"][i].astype(float)
+
+        meta = uid2meta.get(uid, {})
+        vad_meta = uid2vad.get(uid, {})
+        sent  = meta.get("sentiment_score", "?")
+        utt_v = vad_meta.get("valence", "?")
+        utt_a = vad_meta.get("arousal", "?")
+        n_cov = int(vad_meta.get("vad_n_covered", 0))
+        n_w   = len(starts)
+
+        fig, axes = plt.subplots(3, 1, figsize=(14, 6), sharex=True)
+        fig.suptitle(
+            f"{uid}  |  sent={sent:.2f}  utt_valence={utt_v:.3f}  "
+            f"utt_arousal={utt_a:.3f}  covered={n_cov}/{n_w} words",
+            fontsize=9, y=1.01
+        )
+
+        for ax, vals, color, label, ylim in zip(
+            axes,
+            [valences, arousals, dominances],
+            ["#E63946", "#2A9D8F", "#E9C46A"],
+            ["Valence", "Arousal", "Dominance"],
+            [(0, 1), (0, 1), (0, 1)],
+        ):
+            # Step plot: horizontal bar per word, NaN = white gap
+            for j, (s, e, v) in enumerate(zip(starts, ends, vals)):
+                if not np.isnan(s) and not np.isnan(e) and not np.isnan(v):
+                    ax.hlines(v, s, e, colors=color, lw=3.0, alpha=0.85)
+                    ax.vlines(s, 0, v, colors=color, lw=0.5, alpha=0.3)
+            # Mean line
+            valid_v = vals[~np.isnan(vals)]
+            if len(valid_v) > 0:
+                ax.axhline(float(np.mean(valid_v)), color=color, lw=1.0,
+                           ls="--", alpha=0.6, label=f"mean={np.mean(valid_v):.3f}")
+            ax.set_ylabel(label, fontsize=9)
+            ax.set_ylim(0, 1)
+            ax.axhline(0.5, color="gray", lw=0.5, alpha=0.4)
+            ax.legend(fontsize=8, loc="upper right")
+
+        axes[-1].set_xlabel("Time (s)", fontsize=9)
+        plt.tight_layout()
+        plt.show()
+
+
+# %% [markdown]
 # ## Cell 3 — Speechrate + Transcript Viewer
 #
 # For each sampled utterance: word timeline bars (colored by duration),
