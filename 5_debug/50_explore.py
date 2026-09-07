@@ -33,7 +33,14 @@ from scipy import stats
 warnings.filterwarnings("ignore")
 plt.style.use("seaborn-v0_8-whitegrid")
 
-sys.path.insert(0, str(Path(".").resolve()))
+try:
+    # Running as a script: __file__ is defined
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+except NameError:
+    # Running as a notebook cell: walk up from CWD to find project root
+    _cwd = Path(".").resolve()
+    sys.path.insert(0, str(_cwd.parent if _cwd.name == "5_debug" else _cwd))
+
 from utils.config_loader import load_config, get_intermediate_dir, get_results_dir
 from utils.data_utils import load_jsonl
 
