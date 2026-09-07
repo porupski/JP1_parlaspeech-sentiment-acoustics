@@ -53,7 +53,7 @@ REROLL  = False   # True = new random sample each run
 
 rng = random.Random(None if REROLL else SEED)
 
-cfg   = load_config("config.json")
+cfg   = load_config()  # auto-locates config.json relative to utils/
 idir  = get_intermediate_dir(cfg)
 rdir  = get_results_dir(cfg)
 
