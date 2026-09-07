@@ -192,9 +192,7 @@ def main():
             print(f"[{lang}] All outputs exist — skipping. Delete to rerun.")
             continue
         if tsv_done and not npz_done:
-            print(f"[{lang}] TSV exists but LLD NPZ missing — "
-                  f"delete {out_tsv.name} and rerun to generate NPZ.")
-            continue
+            print(f"[{lang}] TSV exists but LLD NPZ missing — reprocessing audio to generate NPZ.")
 
         in_path = idir / f"{lang}_filtered.jsonl"
         if not in_path.exists():

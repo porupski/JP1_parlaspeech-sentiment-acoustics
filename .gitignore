@@ -2,6 +2,10 @@
 data/intermediate/
 data/lexicons/
 
+tests/
+archive/
+logs/*
+
 # --- generated pipeline outputs ---
 results/tables/
 results/figures/
