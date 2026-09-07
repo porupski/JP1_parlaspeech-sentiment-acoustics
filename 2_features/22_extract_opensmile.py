@@ -185,8 +185,15 @@ def main():
 
     for lang in langs:
         out_tsv = idir / f"{lang}_opensmile.tsv"
-        if out_tsv.exists():
-            print(f"[{lang}] {out_tsv} already exists — skipping. Delete to rerun.")
+        out_npz = idir / f"{lang}_opensmile_lld.npz"
+        tsv_done = out_tsv.exists()
+        npz_done = (not save_lld) or out_npz.exists()
+        if tsv_done and npz_done:
+            print(f"[{lang}] All outputs exist — skipping. Delete to rerun.")
+            continue
+        if tsv_done and not npz_done:
+            print(f"[{lang}] TSV exists but LLD NPZ missing — "
+                  f"delete {out_tsv.name} and rerun to generate NPZ.")
             continue
 
         in_path = idir / f"{lang}_filtered.jsonl"

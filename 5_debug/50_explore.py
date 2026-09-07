@@ -571,3 +571,356 @@ for ax, feat in zip(axes, INV_FEATS):
 
 plt.tight_layout()
 plt.show()
+
+# %% [markdown]
+# ## Cell 7 — Praat vs OpenSMILE: Systematic Correlation Table + Heatmap
+#
+# Auto-discovers OpenSMILE column names, computes Pearson r + Spearman r for
+# comparable feature pairs. Prints a table and shows a Spearman r heatmap.
+
+# %%
+from scipy.stats import pearsonr, spearmanr as _spearmanr
+
+_praat_tsv   = idir / f"{LANG}_praat.tsv"
+_osmile_tsv  = idir / f"{LANG}_opensmile.tsv"
+
+if not _praat_tsv.exists() or not _osmile_tsv.exists():
+    print(f"Missing TSVs for {LANG}: need {_praat_tsv.name} and {_osmile_tsv.name}")
+else:
+    _praat_df  = pd.read_csv(_praat_tsv,  sep="\t")
+    _osmile_df = pd.read_csv(_osmile_tsv, sep="\t")
+    _merged    = _praat_df.merge(_osmile_df, on="utterance_id", how="inner")
+    print(f"[{LANG}] Merged rows: {len(_merged):,}  "
+          f"(praat={len(_praat_df):,}, osmile={len(_osmile_df):,})")
+
+    def find_osm_col(keywords: list[str], df: pd.DataFrame) -> str | None:
+        cols = df.columns.tolist()
+        for kw in keywords:
+            hits = [c for c in cols if kw.lower() in c.lower()]
+            if hits:
+                return hits[0]
+        return None
+
+    _PAIRS = [
+        ("f0_raw",         find_osm_col(["F0semitone", "F0semi"], _osmile_df), "F0 (Hz vs semitone)"),
+        ("intensity_raw",  find_osm_col(["Loudness_sma3", "loudness"], _osmile_df), "Intensity / Loudness"),
+        ("f1_median",      find_osm_col(["F1frequency"], _osmile_df), "F1 frequency"),
+        ("f2_median",      find_osm_col(["F2frequency"], _osmile_df), "F2 frequency"),
+        ("f3_median",      find_osm_col(["F3frequency"], _osmile_df), "F3 frequency"),
+        ("hnr_utt",        find_osm_col(["HNRdBACF", "HNR"], _osmile_df), "HNR"),
+        ("jitter_local",   find_osm_col(["jitterLocal", "jitter"], _osmile_df), "Jitter"),
+        ("shimmer_local",  find_osm_col(["shimmerLocal", "shimmer"], _osmile_df), "Shimmer"),
+    ]
+
+    rows_tab = []
+    for praat_col, osm_col, label in _PAIRS:
+        if praat_col not in _merged.columns or osm_col is None or osm_col not in _merged.columns:
+            rows_tab.append({"Feature": label, "Praat": praat_col,
+                             "OpenSMILE": str(osm_col), "Pearson r": None,
+                             "Spearman r": None, "n": None})
+            continue
+        sub = _merged[[praat_col, osm_col]].dropna()
+        if len(sub) < 10:
+            rows_tab.append({"Feature": label, "Praat": praat_col,
+                             "OpenSMILE": osm_col, "Pearson r": None,
+                             "Spearman r": None, "n": len(sub)})
+            continue
+        pr, _ = pearsonr(sub[praat_col], sub[osm_col])
+        sr, _ = _spearmanr(sub[praat_col], sub[osm_col])
+        rows_tab.append({"Feature": label, "Praat": praat_col,
+                         "OpenSMILE": osm_col,
+                         "Pearson r": round(pr, 3), "Spearman r": round(sr, 3),
+                         "n": len(sub)})
+
+    _tab_df = pd.DataFrame(rows_tab)
+    print("\nPraat vs OpenSMILE correlation table:")
+    print(_tab_df.to_string(index=False))
+
+    # Heatmap (Spearman r)
+    _valid = _tab_df.dropna(subset=["Spearman r"])
+    if not _valid.empty:
+        fig, ax = plt.subplots(figsize=(3, len(_valid) * 0.55 + 1))
+        _mat = _valid[["Spearman r"]].values.T.astype(float)
+        im = ax.imshow(_mat, cmap="RdYlGn", vmin=-1, vmax=1, aspect="auto")
+        ax.set_xticks(range(len(_valid)))
+        ax.set_xticklabels(_valid["Feature"].tolist(), rotation=35, ha="right", fontsize=9)
+        ax.set_yticks([0])
+        ax.set_yticklabels(["Spearman r"], fontsize=9)
+        for j, val in enumerate(_mat[0]):
+            ax.text(j, 0, f"{val:.2f}", ha="center", va="center", fontsize=8,
+                    color="black" if abs(val) < 0.7 else "white")
+        plt.colorbar(im, ax=ax, shrink=0.6)
+        ax.set_title(f"Praat vs OpenSMILE — {LANG}", fontsize=11)
+        plt.tight_layout()
+        plt.show()
+    else:
+        print("No valid pairs to plot.")
+
+# %% [markdown]
+# ## Cell 8 — Sentiment vs VAD: Binned Mean + Median, Spearman r
+#
+# Bins utterances by sentiment score, computes mean AND median VAD per bin.
+# Shows 3-panel plot (valence, arousal, dominance) with both curves + linear fit.
+
+# %%
+_vad_tsv = idir / f"{LANG}_vad.tsv"
+
+if not _vad_tsv.exists():
+    print(f"Missing {_vad_tsv}. Run 35_vad.py first.")
+else:
+    _vad_df = pd.read_csv(_vad_tsv, sep="\t")
+    print(f"[{LANG}] VAD rows: {len(_vad_df):,},  "
+          f"coverage: {_vad_df['valence'].notna().sum():,} utterances with ≥1 lemma matched")
+
+    _SENT_MIN, _SENT_MAX = 0.0, 5.0
+    _bins = np.linspace(_SENT_MIN, _SENT_MAX, N_BINS + 1)
+    _bin_centres = 0.5 * (_bins[:-1] + _bins[1:])
+    _vad_df["_bin"] = pd.cut(_vad_df["sentiment_score"], bins=_bins, labels=False,
+                              include_lowest=True)
+
+    _vad_dims = ["valence", "arousal", "dominance"]
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=False)
+
+    for ax, dim in zip(axes, _vad_dims):
+        sub = _vad_df.dropna(subset=["sentiment_score", dim])
+        if len(sub) < 10:
+            ax.set_title(f"{dim} — insufficient data")
+            continue
+
+        sr, sp = _spearmanr(sub["sentiment_score"], sub[dim])
+        _grouped = sub.groupby("_bin")[dim]
+        _means   = _grouped.mean().reindex(range(N_BINS))
+        _medians = _grouped.median().reindex(range(N_BINS))
+        _counts  = _grouped.count().reindex(range(N_BINS), fill_value=0)
+        _ok = _counts >= 3
+
+        ax.plot(_bin_centres[_ok], _means[_ok].values,   "o-", ms=4, lw=1.5,
+                color="#2196F3", label="bin mean")
+        ax.plot(_bin_centres[_ok], _medians[_ok].values, "s--", ms=4, lw=1.5,
+                color="#FF9800", label="bin median")
+
+        # Linear fit on means
+        _x_fit = _bin_centres[_ok]
+        _y_fit = _means[_ok].values
+        if len(_x_fit) >= 3:
+            _m, _b = np.polyfit(_x_fit, _y_fit, 1)
+            ax.plot(_x_fit, _m * _x_fit + _b, "k:", lw=1.2, label=f"linear fit (slope={_m:.3f})")
+
+        ax.set_title(f"{dim}\nSpearman r={sr:.3f}, p={sp:.4f}, n={len(sub):,}", fontsize=10)
+        ax.set_xlabel("Sentiment score", fontsize=9)
+        ax.set_ylabel(dim.capitalize(), fontsize=9)
+        ax.legend(fontsize=8)
+
+    plt.suptitle(f"Sentiment vs VAD — {LANG}", fontsize=12, y=1.01)
+    plt.tight_layout()
+    plt.show()
+
+    # Mean-median agreement table
+    print("\nBin mean vs median agreement (sampled at 10 evenly-spaced bins):")
+    _sample_bins = np.linspace(0, N_BINS - 1, 10, dtype=int)
+    _agree_rows = []
+    for dim in _vad_dims:
+        sub = _vad_df.dropna(subset=["sentiment_score", dim])
+        _grouped = sub.groupby("_bin")[dim]
+        _means_s   = _grouped.mean().reindex(range(N_BINS))
+        _medians_s = _grouped.median().reindex(range(N_BINS))
+        _diff      = (_means_s - _medians_s).abs()
+        _agree_rows.append({"dim": dim,
+                             "mean |mean-median|": round(_diff.mean(), 4),
+                             "max |mean-median|":  round(_diff.max(), 4)})
+    print(pd.DataFrame(_agree_rows).to_string(index=False))
+
+# %% [markdown]
+# ## Cell 9 — CAP Topic Correlation
+#
+# Auto-discovers the parliamentary topic annotation field in the v4 JSONL.
+# Per language: one-way ANOVA of acoustic features by topic.
+# Global view: z-score normalise within each language, average by topic across langs.
+# MIN_TOPIC_N = 50 utterances threshold for inclusion.
+
+# %%
+MIN_TOPIC_N = 50
+_ALL_FEATS = (cfg["analysis"].get("features_main", [])
+              + cfg["analysis"].get("features_appendix", []))
+if not _ALL_FEATS:
+    _ALL_FEATS = ["f0_raw", "intensity_norm", "speechrate_wps",
+                  "f0_norm", "intensity_raw", "speechrate_sps"]
+_FEAT_FOR_TOPIC = _ALL_FEATS  # or set to a subset, e.g. ["f0_raw", "speechrate_wps"]
+__JSONL_DIR = Path(cfg["paths"]["data_root"])
+
+def _discover_topic_field(jsonl_path: Path, n_probe: int = 200) -> str | None:
+    """Probe first n_probe records and return the first field whose name suggests a topic."""
+    _keywords = ["topic", "cap", "category", "subject", "policy", "issue"]
+    _candidates: dict[str, int] = {}
+    with open(jsonl_path, encoding="utf-8") as _f:
+        for i, _line in enumerate(_f):
+            if i >= n_probe:
+                break
+            try:
+                _rec = json.loads(_line)
+            except json.JSONDecodeError:
+                continue
+            # Flatten one level
+            _flat = {}
+            for _k, _v in _rec.items():
+                if isinstance(_v, dict):
+                    for _kk, _vv in _v.items():
+                        _flat[f"{_k}.{_kk}"] = _vv
+                else:
+                    _flat[_k] = _v
+            for _fk, _fv in _flat.items():
+                if any(_kw in _fk.lower() for _kw in _keywords):
+                    if isinstance(_fv, (str, int, float)) and _fv not in (None, ""):
+                        _candidates[_fk] = _candidates.get(_fk, 0) + 1
+    if not _candidates:
+        return None
+    return max(_candidates, key=lambda k: _candidates[k])
+
+
+def _load_topic_map(jsonl_path: Path, target_ids: set, field: str) -> dict[str, str]:
+    """Stream JSONL and return {utterance_id: topic_value} for target_ids."""
+    _top_keys = field.split(".", 1)
+    _result = {}
+    with open(jsonl_path, encoding="utf-8") as _f:
+        for _line in _f:
+            if len(_result) >= len(target_ids):
+                break
+            _line = _line.strip()
+            if not _line:
+                continue
+            try:
+                _rec = json.loads(_line)
+            except json.JSONDecodeError:
+                continue
+            _uid = _rec.get("id")
+            if _uid not in target_ids:
+                continue
+            if len(_top_keys) == 1:
+                _val = _rec.get(_top_keys[0])
+            else:
+                _val = (_rec.get(_top_keys[0]) or {}).get(_top_keys[1])
+            if _val is not None:
+                _result[_uid] = str(_val)
+    return _result
+
+
+from scipy.stats import f_oneway as _f_oneway
+
+_topic_field = None
+for _lang in [LANG] + [l for l in ALL_LANGS if l != LANG]:
+    _v4_path = _JSONL_DIR / f"ParlaSpeech-{_lang}.v4.0.patched.jsonl"
+    if _v4_path.exists():
+        _topic_field = _discover_topic_field(_v4_path)
+        if _topic_field:
+            print(f"Auto-discovered topic field: '{_topic_field}' (from {_lang})")
+            break
+
+if _topic_field is None:
+    print("No topic field found in JSONL. Skipping CAP cell.")
+else:
+    # --- Per-language ANOVA ---
+    print(f"\n--- Per-language ANOVA: features by topic (field='{_topic_field}') ---")
+    _all_lang_topic_dfs = {}  # lang → merged df with topic column
+
+    for _lang in ALL_LANGS:
+        _v4_path  = _JSONL_DIR / f"ParlaSpeech-{_lang}.v4.0.patched.jsonl"
+        _feat_tsv = idir / f"{_lang}_praat.tsv"
+        _filt_jsn = idir / f"{_lang}_filtered.jsonl"
+        if not (_v4_path.exists() and _feat_tsv.exists() and _filt_jsn.exists()):
+            print(f"[{_lang}] Missing files, skipping.")
+            continue
+
+        _filt_recs  = [json.loads(l) for l in open(_filt_jsn) if l.strip()]
+        _target_ids = {r["utterance_id"] for r in _filt_recs}
+        _topic_map  = _load_topic_map(_v4_path, _target_ids, _topic_field)
+
+        _feat_df = pd.read_csv(_feat_tsv, sep="\t")
+        _feat_df["_topic"] = _feat_df["utterance_id"].map(_topic_map)
+        _feat_df = _feat_df.dropna(subset=["_topic"])
+
+        _topic_counts = _feat_df["_topic"].value_counts()
+        _keep_topics  = _topic_counts[_topic_counts >= MIN_TOPIC_N].index
+        _feat_df      = _feat_df[_feat_df["_topic"].isin(_keep_topics)]
+        print(f"[{_lang}] {len(_keep_topics)} topics (≥{MIN_TOPIC_N} utts), "
+              f"{len(_feat_df):,} utterances retained")
+
+        _all_lang_topic_dfs[_lang] = _feat_df
+
+        # ANOVA per feature
+        _anova_rows = []
+        for _feat in _FEAT_FOR_TOPIC:
+            if _feat not in _feat_df.columns:
+                continue
+            _groups = [_feat_df[_feat_df["_topic"] == t][_feat].dropna().values
+                       for t in _keep_topics]
+            _groups = [g for g in _groups if len(g) >= 3]
+            if len(_groups) < 2:
+                continue
+            _F, _p = _f_oneway(*_groups)
+            _anova_rows.append({"feature": _feat, "F": round(_F, 2), "p": round(_p, 5),
+                                 "n_topics": len(_groups)})
+        if _anova_rows:
+            _anov_df = pd.DataFrame(_anova_rows).sort_values("p")
+            print(f"  ANOVA (top features):\n{_anov_df.head(5).to_string(index=False)}")
+
+    # --- Per-language bar chart for LANG ---
+    if LANG in _all_lang_topic_dfs:
+        _df_t = _all_lang_topic_dfs[LANG]
+        _feat_for_plot = [f for f in _FEAT_FOR_TOPIC if f in _df_t.columns][:4]
+        _n_f = len(_feat_for_plot)
+        if _n_f > 0:
+            fig, axes = plt.subplots(1, _n_f, figsize=(5 * _n_f, 5), sharey=False)
+            if _n_f == 1:
+                axes = [axes]
+            for _ax, _feat in zip(axes, _feat_for_plot):
+                _topic_means = _df_t.groupby("_topic")[_feat].mean().sort_values()
+                _topic_sems  = _df_t.groupby("_topic")[_feat].sem().reindex(_topic_means.index)
+                _ax.barh(_topic_means.index, _topic_means.values,
+                         xerr=_topic_sems.values, capsize=3, color="#5C85D6")
+                _ax.set_title(FEAT_LABELS.get(_feat, _feat), fontsize=10)
+                _ax.set_xlabel("Mean feature value", fontsize=9)
+                _ax.tick_params(axis="y", labelsize=7)
+            plt.suptitle(f"Feature means by CAP topic — {LANG}", fontsize=12)
+            plt.tight_layout()
+            plt.show()
+
+    # --- Global z-score normalised view ---
+    print("\n--- Global z-score normalised means by topic ---")
+    _global_rows = []
+    for _lang, _df_t in _all_lang_topic_dfs.items():
+        for _feat in _FEAT_FOR_TOPIC:
+            if _feat not in _df_t.columns:
+                continue
+            _mu, _sd = _df_t[_feat].mean(), _df_t[_feat].std()
+            if _sd < 1e-9:
+                continue
+            _df_t = _df_t.copy()
+            _df_t[f"_z_{_feat}"] = (_df_t[_feat] - _mu) / _sd
+            for _top in _df_t["_topic"].unique():
+                _sub = _df_t[_df_t["_topic"] == _top][f"_z_{_feat}"].dropna()
+                if len(_sub) < MIN_TOPIC_N:
+                    continue
+                _global_rows.append({"lang": _lang, "topic": _top,
+                                     "feature": _feat, "z_mean": _sub.mean()})
+
+    if _global_rows:
+        _glob_df  = pd.DataFrame(_global_rows)
+        _pivot    = _glob_df.groupby(["topic", "feature"])["z_mean"].mean().unstack("feature")
+        _pivot    = _pivot.dropna(how="all")
+        _feat_cols = [f for f in _FEAT_FOR_TOPIC if f in _pivot.columns]
+        if _feat_cols:
+            _pivot = _pivot[_feat_cols]
+            _order = _pivot.mean(axis=1).sort_values().index
+            _pivot = _pivot.loc[_order]
+            fig, ax = plt.subplots(figsize=(max(6, len(_feat_cols) * 2), max(4, len(_pivot) * 0.45 + 1)))
+            im2 = ax.imshow(_pivot.values.T, cmap="RdBu_r", aspect="auto", vmin=-1.5, vmax=1.5)
+            ax.set_xticks(range(len(_pivot)))
+            ax.set_xticklabels(_pivot.index.tolist(), rotation=35, ha="right", fontsize=8)
+            ax.set_yticks(range(len(_feat_cols)))
+            ax.set_yticklabels([FEAT_LABELS.get(f, f) for f in _feat_cols], fontsize=9)
+            plt.colorbar(im2, ax=ax, shrink=0.6, label="z-score")
+            ax.set_title("Global z-score normalised feature means by CAP topic", fontsize=11)
+            plt.tight_layout()
+            plt.show()
+    else:
+        print("No global rows — check topic field coverage.")

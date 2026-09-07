@@ -8,7 +8,7 @@ results/figures/
 results/*.json
 
 # --- jupytext-generated notebooks (source is the .py file) ---
-*.ipynb
+#*.ipynb
 
 # --- Python ---
 __pycache__/
