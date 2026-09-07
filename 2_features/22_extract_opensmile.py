@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  22_extract_opensmile.py
 # Release: 1.0
-# Version: v1.10
+# Version: v1.11
 # Purpose: Extract OpenSMILE GeMAPS features per utterance (appendix track).
 #          Disabled by default; enable via config enable_opensmile = true.
 #
@@ -18,6 +18,9 @@
 #   idx = {uid: i for i, uid in enumerate(data['utterance_ids'])}
 #   f0 = data['f0_lld'][idx['some_id']]   # shape (n_voiced_frames,)
 #
+# v1.11: Fix LLD time extraction: pd.Timedelta.total_seconds() required (pandas>=2.2
+#         breaks bare float() on Timedelta, silently killing the entire LLD block).
+#         Remove any(lld is not None) guard; always write NPZ with warning if all fail.
 # v1.10: Added LLD NPZ output.
 # ============================================================
 
@@ -118,9 +121,11 @@ def _process_record_worker(rec: dict) -> dict:
         try:
             smile_lld = _get_smile_lld()
             lld_df = smile_lld.process_file(str(audio_path), start=start, end=end)
-            # Extract time axis from MultiIndex (start_time per frame)
+            # Extract time axis from MultiIndex (start_time per frame).
+            # idx[1] is pd.Timedelta — .total_seconds() required; bare float()
+            # raises TypeError in pandas>=2.2 and silently kills the whole block.
             times = np.array(
-                [idx[1] for idx in lld_df.index], dtype=np.float32
+                [idx[1].total_seconds() for idx in lld_df.index], dtype=np.float32
             )
             lld_data: dict[str, np.ndarray] = {"_lld_times": times}
             for key, col in _LLD_COL_MAP.items():
@@ -237,9 +242,13 @@ def main():
         write_tsv(df, out_tsv)
         print(f"  TSV → {out_tsv} ({len(df.columns)} cols)")
 
-        if save_lld and any(lld is not None for _, lld in lld_pairs):
+        if save_lld and lld_pairs:
+            n_lld_ok = sum(1 for _, lld in lld_pairs if lld is not None)
+            if n_lld_ok == 0:
+                print(f"  WARNING: All {len(lld_pairs):,} LLD extractions failed — "
+                      f"NPZ will contain empty arrays. Check opensmile installation / audio access.")
             npz_path = idir / f"{lang}_opensmile_lld.npz"
-            print(f"  Saving LLD NPZ ({len(lld_pairs):,} utterances) ...")
+            print(f"  Saving LLD NPZ ({n_lld_ok:,}/{len(lld_pairs):,} LLDs valid) ...")
             _save_lld_npz(npz_path, lld_pairs)
             print(f"  LLD NPZ → {npz_path}")
 
