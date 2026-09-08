@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  50_explore.py  (Jupyter-compatible notebook)
 # Release: 1.0
-# Version: v1.07
+# Version: v1.08
 # Purpose: Debug and exploration for ParlaSpeech sentiment-acoustics.
 #          Envelope viewer, speechrate+transcript, general replotters,
 #          Praat vs OpenSMILE comparison, per-language anomaly inspector.
@@ -11,6 +11,12 @@
 #          Convert: jupytext --to notebook 5_debug/50_explore.py --output 5_debug/50_explore.ipynb
 #          Run from: JP1_parlaspeech-sentiment-acoustics/ directory (kernel CWD irrelevant — paths are absolute)
 #
+# v1.08: New Cell 1b — per-lang coverage table (VAD % word-level + utt-level, F0/Int/SR
+#        validity %). New Cell 6c — clean editorial trend plots (per-lang and GLOBAL,
+#        F0 per-speaker z-scored + M/F splits, thick orange line, no overlays). New
+#        Cell 10 — reads results/*.json (h1/h2/h3/numbers/vad) and prints a summary.
+#        All per-lang & GLOBAL metrics also collected into `results.json` (dumped at
+#        exit) so the log is verbose and the JSON is complete.
 # v1.07: LANGS list drives all single-lang cells (previously LANG='SI' only ran SI).
 #        Every plt.show() replaced with save_fig(descriptive_name) so headless PNGs
 #        have meaningful filenames (e.g. cell02_envelope_SI_example03_<uid>.png).
@@ -116,11 +122,26 @@ from explore_utils import FigSaver, logprint, zscore_per_speaker, \
 
 save_fig = FigSaver(FIGS_DIR, HEADLESS)   # every plot: save_fig("descriptive_name")
 
+# --- Collect ALL computed numbers here; dumped at exit as results.json ---
+import atexit
+results_json: dict = {
+    "notebook_version": "1.08",
+    "started": _dt.now().isoformat(timespec="seconds"),
+    "test_run": bool(HEADLESS and _args_ns is not None) and False,  # set below after LANGS
+}
+def _dump_results_json():
+    _dst = (FIGS_DIR / "results.json") if HEADLESS else (_repo_root / "logs" / "explore_last_run_results.json")
+    _dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(_dst, "w", encoding="utf-8") as _f:
+        json.dump(results_json, _f, indent=2, default=str, ensure_ascii=False)
+    print(f"[results.json] Wrote {_dst}")
+atexit.register(_dump_results_json)
+
 # ── Configure here ──────────────────────────────────────────────────────────
 # LANGS drives every per-language loop. Single-lang cells (envelope viewers,
 # transcript, praat vs osmile, VAD) iterate through LANGS. If you only want
 # one language, put one code in the list. All-lang cells use ALL_LANGS.
-LANGS      = ["SI"]                          # e.g. ["HR","CZ","PL","RS","SI"]
+LANGS      = ["SI"]      # e.g. ["HR"] or ["HR","CZ","PL","RS","SI"]
 LANG       = LANGS[0]                        # back-compat alias for single-lang code paths
 ALL_LANGS  = ["HR", "CZ", "PL", "RS", "SI"]  # used by global-trend and cross-lang cells
 SEED       = 42      # reproducible sample; ignored when REROLL=True
@@ -142,6 +163,10 @@ PALETTE = {
     "RS": "#264653", "SI": "#A8DADC",
 }
 
+results_json.update({"langs": LANGS, "all_langs": ALL_LANGS, "test_run": TEST_RUN,
+                     "test_run_n": TEST_RUN_N if TEST_RUN else None,
+                     "n_examples": N_EXAMPLES, "seed": SEED})
+
 # Load features TSV for LANG (if present)
 feats_path = idir / f"{LANG}_features.tsv"
 _nrows = TEST_RUN_N if TEST_RUN else None
@@ -152,6 +177,75 @@ else:
     _cap = f" (TEST_RUN cap={TEST_RUN_N:,})" if TEST_RUN else ""
     print(f"Loaded {len(df_feats):,} utterances from {feats_path.name}{_cap}")
     print(f"  Columns: {list(df_feats.columns[:12])} ...")
+
+# %% [markdown]
+# ## Cell 1b — Per-language coverage summary
+#
+# For every language: N utterances, N speakers, VAD coverage %, and validity %
+# for each core acoustic feature (F0, intensity, speech rate). Prints a table
+# and dumps to `results.json["coverage"]`. Gives a one-shot view of data health.
+
+# %%
+print("\n=== Cell 1b · Per-language coverage summary ===")
+_cov_rows = []
+_cov_json: dict = {}
+_gender_rows: list = []
+for _L in ALL_LANGS:
+    _fp = idir / f"{_L}_features.tsv"
+    if not _fp.exists():
+        print(f"[{_L}] SKIP: {_fp.name} not found"); continue
+    _df = pd.read_csv(_fp, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+    _n = len(_df)
+    _n_spk = _df["speaker_id"].nunique() if "speaker_id" in _df else 0
+    _row: dict = {"lang": _L, "N_utt": _n, "N_spk": _n_spk}
+
+    # Feature validity (not-null %) — use whichever columns exist
+    for _feat, _short in [("f0_raw","F0%"), ("intensity_raw","Int%"),
+                          ("speechrate_wps","SR%"), ("hnr_utt","HNR%")]:
+        if _feat in _df.columns:
+            _pct = 100.0 * _df[_feat].notna().sum() / _n
+            _row[_short] = round(_pct, 1)
+
+    # VAD coverage: read {L}_vad.tsv
+    _vtsv = idir / f"{_L}_vad.tsv"
+    if _vtsv.exists():
+        _vdf = pd.read_csv(_vtsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+        _n_val_utt = int(_vdf["valence"].notna().sum())
+        _row["VADutt%"] = round(100.0 * _n_val_utt / len(_vdf), 1) if len(_vdf) else 0.0
+        # Word-level: n_covered vs n_words per utterance → mean of ratios
+        if "vad_n_covered" in _vdf.columns and "utterance_id" in _vdf.columns:
+            _mrg = _vdf[["utterance_id", "vad_n_covered"]].merge(
+                _df[["utterance_id", "n_words"]], on="utterance_id", how="inner")
+            _mrg = _mrg[_mrg["n_words"] > 0]
+            if len(_mrg):
+                _mrg["_ratio"] = _mrg["vad_n_covered"] / _mrg["n_words"]
+                _row["VADword%"] = round(100.0 * _mrg["_ratio"].mean(), 1)
+                _row["MeanCovered"] = round(_mrg["vad_n_covered"].mean(), 1)
+                _row["MeanNwords"]  = round(_mrg["n_words"].mean(), 1)
+
+    # Gender split for the summary
+    if "gender" in _df.columns:
+        _g = _df["gender"].str.lower().str[0].value_counts().to_dict()
+        _row["M/F"] = f"{_g.get('m',0):,}/{_g.get('f',0):,}"
+
+    _cov_rows.append(_row)
+    _cov_json[_L] = _row
+
+_cov_df = pd.DataFrame(_cov_rows)
+print(_cov_df.to_string(index=False))
+
+# Cross-lang averages (unweighted across langs)
+if _cov_rows:
+    _avg: dict = {"lang": "AVG"}
+    for _k in _cov_rows[0]:
+        if _k == "lang": continue
+        _vals = [r[_k] for r in _cov_rows if isinstance(r.get(_k), (int, float))]
+        if _vals: _avg[_k] = round(float(np.mean(_vals)), 1)
+    print("--- unweighted average across languages ---")
+    print(pd.DataFrame([_avg]).to_string(index=False))
+    _cov_json["_AVG"] = _avg
+
+results_json["coverage"] = _cov_json
 
 # %% [markdown]
 # ## Cell 2 — Envelope Viewer (Praat NPZ)
@@ -918,6 +1012,118 @@ else:
               f"{np.nanmax(_d):>10.4f} {np.nanmax(_eq) - np.nanmin(_eq):>14.4f}")
 
 # %% [markdown]
+# ## Cell 6c — Clean editorial trend plots (per-lang and global)
+#
+# Editorial style à la `3i_editorial_plots_png-GOOD.py`: single thick orange line,
+# no per-language overlays, no dashed alternates. One multi-panel figure per view.
+#
+# Views produced (18 figures total when ALL_LANGS = 5):
+#
+#   PER-LANG (5 langs × 3 variants = 15):
+#     · <lang>_pooled_zscore  — F0 z-scored per speaker (gender-neutral), other
+#       features as raw. All speakers pooled.
+#     · <lang>_gender_F       — F speakers only, F0 raw and other features raw.
+#     · <lang>_gender_M       — M speakers only.
+#
+#   GLOBAL (all languages pooled, 3 variants):
+#     · GLOBAL_pooled_zscore, GLOBAL_gender_F, GLOBAL_gender_M
+#
+# Records slopes / intercepts / r into results.json["editorial_trends"].
+
+# %%
+_EDIT_FEATS = INV_FEATS  # ["f0_raw", "speechrate_wps", "intensity_norm"]
+_x_edit = 0.5 * (np.linspace(0, 5, N_BINS + 1)[:-1] + np.linspace(0, 5, N_BINS + 1)[1:])
+results_json.setdefault("editorial_trends", {})
+
+def _plot_editorial_panel(df, feats, title_prefix, save_stub, feat_transforms=None):
+    """One figure, N panels (one per feature); orange thick line; log stats.
+    feat_transforms: {feat: series_transform_func} — e.g. z-score F0.
+    """
+    feat_transforms = feat_transforms or {}
+    fig, axes = plt.subplots(1, len(feats), figsize=(len(feats) * 5, 4), squeeze=False)
+    axes = axes[0]
+    _ent = {"n_utterances": int(len(df)),
+            "n_speakers": int(df["speaker_id"].nunique()) if "speaker_id" in df else None,
+            "features": {}}
+    for _ax, _feat in zip(axes, feats):
+        if _feat not in df.columns:
+            _ax.set_title(f"{FEAT_LABELS.get(_feat, _feat)}\n(missing)"); continue
+        _work = df.copy()
+        _label_extra = ""
+        if _feat in feat_transforms:
+            _work[_feat] = feat_transforms[_feat](_work)
+            _label_extra = " (per-speaker z)"
+        _y = binned_speaker_mean(_work, _feat, N_BINS)
+        _stats = clean_trend_plot(
+            _ax, _x_edit, _y,
+            title=f"{FEAT_LABELS.get(_feat, _feat)}{_label_extra}",
+            ylabel=f"{_feat}{_label_extra}",
+        )
+        _ent["features"][_feat] = {**_stats}
+        logprint(f"  [{title_prefix}] {_feat}",
+                 f"slope={_stats['slope']:+.4f} r={_stats['r']:+.4f} n_bins_ok={_stats['n_bins_valid']}",
+                 indent=1)
+    fig.suptitle(title_prefix, fontsize=12)
+    plt.tight_layout()
+    save_fig(save_stub)
+    return _ent
+
+# Per-language passes
+for _L in ALL_LANGS:
+    _fp = idir / f"{_L}_features.tsv"
+    if not _fp.exists():
+        continue
+    _df_L = pd.read_csv(_fp, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+    print(f"\n=== Cell 6c · {_L} · editorial trends ===")
+
+    # Variant 1: pooled with F0 z-scored per speaker
+    _ent = _plot_editorial_panel(
+        _df_L, _EDIT_FEATS,
+        title_prefix=f"{_L} — pooled  ·  F0 per-speaker z-scored",
+        save_stub=f"cell06c_{_L}_pooled_zscore",
+        feat_transforms={"f0_raw": lambda d: zscore_per_speaker(d, "f0_raw")},
+    )
+    results_json["editorial_trends"].setdefault(_L, {})["pooled_zscore"] = _ent
+
+    # Variants 2 & 3: gender-split, raw F0
+    if "gender" in _df_L.columns:
+        for _g, _tag in [("f", "F"), ("m", "M")]:
+            _sub = _df_L[_df_L["gender"].str.lower().str[0] == _g]
+            if _sub.empty:
+                print(f"[{_L}] no {_tag} speakers; skipping"); continue
+            _ent = _plot_editorial_panel(
+                _sub, _EDIT_FEATS,
+                title_prefix=f"{_L} — {_tag} speakers only  ·  F0 raw",
+                save_stub=f"cell06c_{_L}_gender_{_tag}",
+            )
+            results_json["editorial_trends"][_L][f"gender_{_tag}"] = _ent
+
+# GLOBAL: pool all languages together
+_globals_ok = [pd.read_csv(idir / f"{_L}_features.tsv", sep="\t",
+                             nrows=TEST_RUN_N if TEST_RUN else None)
+                for _L in ALL_LANGS if (idir / f"{_L}_features.tsv").exists()]
+if _globals_ok:
+    _df_g = pd.concat(_globals_ok, ignore_index=True)
+    print(f"\n=== Cell 6c · GLOBAL (all {len(_globals_ok)} langs merged) · editorial trends ===")
+    _ent = _plot_editorial_panel(
+        _df_g, _EDIT_FEATS,
+        title_prefix="GLOBAL — pooled  ·  F0 per-speaker z-scored",
+        save_stub="cell06c_GLOBAL_pooled_zscore",
+        feat_transforms={"f0_raw": lambda d: zscore_per_speaker(d, "f0_raw")},
+    )
+    results_json["editorial_trends"].setdefault("GLOBAL", {})["pooled_zscore"] = _ent
+    if "gender" in _df_g.columns:
+        for _g, _tag in [("f", "F"), ("m", "M")]:
+            _sub = _df_g[_df_g["gender"].str.lower().str[0] == _g]
+            if _sub.empty: continue
+            _ent = _plot_editorial_panel(
+                _sub, _EDIT_FEATS,
+                title_prefix=f"GLOBAL — {_tag} speakers only  ·  F0 raw",
+                save_stub=f"cell06c_GLOBAL_gender_{_tag}",
+            )
+            results_json["editorial_trends"]["GLOBAL"][f"gender_{_tag}"] = _ent
+
+# %% [markdown]
 # ## Cell 7 — Praat vs OpenSMILE: Systematic Correlation Table + Heatmap
 #
 # Auto-discovers OpenSMILE column names, computes Pearson r + Spearman r for
@@ -979,6 +1185,9 @@ for _L in LANGS:
   _tab_df = pd.DataFrame(rows_tab)
   print(f"\n[{_L}] Praat vs OpenSMILE correlation table:")
   print(_tab_df.to_string(index=False))
+  results_json.setdefault("praat_vs_opensmile", {})[_L] = [
+    {k: v for k, v in row.items()} for row in rows_tab
+  ]
 
   # Heatmap (Spearman r)
   _valid = _tab_df.dropna(subset=["Spearman r"])
@@ -1011,6 +1220,7 @@ _bins = np.linspace(_SENT_MIN, _SENT_MAX, N_BINS + 1)
 _bin_centres = 0.5 * (_bins[:-1] + _bins[1:])
 _vad_dims = ["valence", "arousal", "dominance"]
 _all_vad_dfs = []   # collected per-lang for the global merged view
+results_json.setdefault("sentiment_vs_vad", {})
 
 # ── PER-LANGUAGE ───────────────────────────────────────────────────────────
 for _L in LANGS:
@@ -1051,6 +1261,9 @@ for _L in LANGS:
     ax.set_ylabel(dim.capitalize(), fontsize=9)
     ax.legend(fontsize=8)
     logprint(f"[{_L}] Spearman sentiment × {dim}", f"ρ={sr:+.4f} p={sp:.3e} n={len(sub):,}", indent=1)
+    results_json["sentiment_vs_vad"].setdefault(_L, {})[dim] = {
+        "rho": float(sr), "p": float(sp), "n": int(len(sub))
+    }
 
   plt.suptitle(f"Sentiment vs VAD — {_L}", fontsize=12, y=1.01)
   plt.tight_layout()
@@ -1082,6 +1295,9 @@ if len(_all_vad_dfs) >= 2:
       ax.set_title(f"{dim} — insufficient data"); continue
     sr, sp = _spearmanr(sub["sentiment_score"], sub[dim])
     logprint(f"[GLOBAL] Spearman sentiment × {dim}", f"ρ={sr:+.4f} p={sp:.3e} n={len(sub):,}", indent=1)
+    results_json["sentiment_vs_vad"].setdefault("GLOBAL", {})[dim] = {
+        "rho": float(sr), "p": float(sp), "n": int(len(sub))
+    }
     _grouped = sub.groupby("_bin")[dim]
     _means   = _grouped.mean().reindex(range(N_BINS))
     _counts  = _grouped.count().reindex(range(N_BINS), fill_value=0)
@@ -1343,3 +1559,87 @@ else:
             save_fig("cell09_topic_global_zscore")
     else:
         print("No global rows — check topic field coverage.")
+
+# %% [markdown]
+# ## Cell 10 — Read + display the pipeline results (results/*.json)
+#
+# Reads the JSONs produced by 3_analysis/ and 4_outputs/41_numbers.py and prints
+# a compact summary of the paper's headline numbers so the notebook is a single
+# entry point for "what does the pipeline say right now". Absent JSONs are
+# skipped with a note. Everything read here is also mirrored into
+# results.json["pipeline"] so the notebook's own JSON contains a copy.
+
+# %%
+_res_dir = (_repo_root / cfg["paths"]["results_dir"]).resolve()
+print(f"\n=== Cell 10 · Pipeline results in {_res_dir} ===")
+
+_pipeline: dict = {}
+_files = {
+    "numbers":         _res_dir / "numbers.json",
+    "h1":              _res_dir / "h1_results.json",
+    "h2":              _res_dir / "h2_results.json",
+    "h3":              _res_dir / "h3_results.json",
+    "vad_correlations":_res_dir / "vad_correlations.json",
+    "global_trend":    _res_dir / "global_trend.json",
+}
+for _k, _p in _files.items():
+    if _p.exists():
+        with open(_p) as _fh:
+            _pipeline[_k] = json.load(_fh)
+        print(f"  [OK] {_p.name} — {_p.stat().st_size:,} bytes")
+    else:
+        print(f"  [--] {_p.name} not present (run 3_analysis / 4_outputs first)")
+
+results_json["pipeline"] = _pipeline
+
+# numbers.json headline
+if "numbers" in _pipeline:
+    _num = _pipeline["numbers"]
+    print(f"\n[numbers.json] Headline hypothesis counts:")
+    for _k in ["h1_sig_speaker_avg", "h1_total", "h2_sig", "h2_total",
+               "h3_strong", "h3_partial", "h3_supported", "h3_total"]:
+        if _k in _num:
+            print(f"  {_k:<28s} {_num[_k]}")
+
+# H1 per lang×feature — p_bh + rank-biserial
+if "h1" in _pipeline:
+    _h1_rows = []
+    for _key, _v in _pipeline["h1"].items():
+        _sa = _v.get("speaker_avg", {})
+        _h1_rows.append({"key": _key,
+                         "n": _sa.get("n"),
+                         "RBC": round(_sa.get("rbc", float("nan")), 3),
+                         "p_bh": _sa.get("p_bh"),
+                         "concord": round(_sa.get("concordance", float("nan")), 3)})
+    _h1_df = pd.DataFrame(_h1_rows).sort_values("p_bh")
+    print(f"\n[H1 — Wilcoxon speaker-avg] {len(_h1_df)} tests, ranked by p_bh:")
+    print(_h1_df.head(15).to_string(index=False))
+    _sig = _h1_df[_h1_df["p_bh"] < 0.05]
+    print(f"  {len(_sig)}/{len(_h1_df)} significant at p_bh < 0.05")
+
+# H2 per lang×feature — mean_tau + CI + significant-speaker fraction
+if "h2" in _pipeline:
+    _h2 = _pipeline["h2"]
+    print(f"\n[H2 — Kendall τ] {len(_h2)} tests, ranked by |mean_tau|:")
+    _h2_rows = []
+    for _key, _v in _h2.items():
+        if not isinstance(_v, dict): continue
+        _mt = _v.get("mean_tau", float("nan"))
+        _ns, _nt = _v.get("n_sig_speakers", 0), _v.get("n_speakers", 1) or 1
+        _h2_rows.append({"key": _key,
+                         "mean_tau": round(_mt, 3),
+                         "ci_lo":    round(_v.get("ci_lo", float("nan")), 3),
+                         "ci_hi":    round(_v.get("ci_hi", float("nan")), 3),
+                         "sig_spk":  f"{_ns}/{_nt} ({100*_ns/_nt:.0f}%)",
+                         "p_bh":     _v.get("p_bh")})
+    _h2_df = pd.DataFrame(_h2_rows)
+    _h2_df = _h2_df.reindex(_h2_df["mean_tau"].abs().sort_values(ascending=False).index)
+    print(_h2_df.head(15).to_string(index=False))
+
+# VAD correlations from pipeline
+if "vad_correlations" in _pipeline:
+    print(f"\n[VAD pipeline results]  (compare with Cell 8's per-lang/GLOBAL Spearman)")
+    print(json.dumps(_pipeline["vad_correlations"], indent=2)[:1500])
+    print("  ... (truncated; full copy is in results.json)")
+
+print(f"\n[results.json] Everything above + Cell 8/6c/1b metrics are being dumped at exit.")

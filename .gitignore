@@ -1,6 +1,7 @@
 # --- data (large files, not committed) ---
 data/intermediate/
 data/lexicons/
+data/sample/
 
 misc/
 
