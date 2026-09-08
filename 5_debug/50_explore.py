@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  50_explore.py  (Jupyter-compatible notebook)
 # Release: 1.0
-# Version: v1.04
+# Version: v1.06
 # Purpose: Debug and exploration for ParlaSpeech sentiment-acoustics.
 #          Envelope viewer, speechrate+transcript, general replotters,
 #          Praat vs OpenSMILE comparison, per-language anomaly inspector.
@@ -11,6 +11,15 @@
 #          Convert: jupytext --to notebook 5_debug/50_explore.py --output 5_debug/50_explore.ipynb
 #          Run from: JP1_parlaspeech-sentiment-acoustics/ directory (kernel CWD irrelevant — paths are absolute)
 #
+# v1.06: --headless / --save-figs flags. In headless mode: matplotlib=Agg,
+#        plt.show → savefig+close, stdout tee'd to logs/explore_<ts>/run.log.
+#        Cell 6b gains SPLIT_BY_GENDER toggle (critical for F0 — M/F ranges
+#        differ by ~100Hz; pooling raw hides true sentiment effect).
+# v1.05: Cell 2 gains silent+filled pause overlays; Cell 2b prints VAD % coverage;
+#        Cell 3 word-timeline gets color-scheme caption + filled-pause spans;
+#        New Cell 6b — global trends (equal-language vs weighted-speaker) with
+#        divergence summary. Topic cell now prefers `topic` column from filtered
+#        JSONL (10_filter.py v1.02+), falls back to raw v4 only if missing.
 # v1.04: Fix Cell 2/2b/5 hang — cache NpzFile arrays into locals. NpzFile.__getitem__
 #        re-decompresses+unpickles the whole array per call; `data[key]` inside a loop
 #        was doing N full disk-to-memory hits. Fix Cell 7 heatmap geometry (was tall/narrow).
@@ -36,11 +45,27 @@ import json
 import os
 import random
 import warnings
+import argparse
+from datetime import datetime as _dt
+from pathlib import Path
+
+# --- CLI args (only meaningful when run as a script; ignored in Jupyter) ---
+_ap = argparse.ArgumentParser(add_help=False)
+_ap.add_argument("--headless", action="store_true",
+                 help="No display; save figs and tee stdout to logs/explore_<ts>/")
+_ap.add_argument("--save-figs", default=None,
+                 help="Directory for figures (implies --headless)")
+_args_ns, _ = _ap.parse_known_args()
+HEADLESS = _args_ns.headless or _args_ns.save_figs is not None
+
+if HEADLESS:
+    import matplotlib
+    matplotlib.use("Agg", force=True)   # must precede pyplot import
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from pathlib import Path
 from scipy import stats
 
 warnings.filterwarnings("ignore")
@@ -55,6 +80,33 @@ except NameError:
     _repo_root = _cwd.parent if _cwd.name == "5_debug" else _cwd
 sys.path.insert(0, str(_repo_root))
 os.chdir(_repo_root)   # make relative paths (data/intermediate/…) resolve from repo root
+
+# --- Headless setup: fig-dir + stdout tee to log file ---
+if HEADLESS:
+    FIGS_DIR = (Path(_args_ns.save_figs).resolve() if _args_ns.save_figs
+                else (_repo_root / "logs" / f"explore_{_dt.now().strftime('%Y%m%d_%H%M%S')}").resolve())
+    FIGS_DIR.mkdir(parents=True, exist_ok=True)
+    _fig_state = {"n": 0}
+    def _save_show(*_a, **_kw):
+        _fig_state["n"] += 1
+        _fp = FIGS_DIR / f"fig_{_fig_state['n']:03d}.png"
+        plt.gcf().savefig(_fp, dpi=120, bbox_inches="tight")
+        plt.close("all")
+    plt.show = _save_show   # every plt.show() now saves + closes; no display
+
+    class _Tee:
+        def __init__(self, *streams): self._s = streams
+        def write(self, s):
+            for st in self._s:
+                st.write(s)
+            return len(s)
+        def flush(self):
+            for st in self._s: st.flush()
+    _log_fh = open(FIGS_DIR / "run.log", "w", buffering=1, encoding="utf-8")
+    sys.stdout = _Tee(sys.__stdout__, _log_fh)
+    print(f"[HEADLESS] Started {_dt.now().isoformat(timespec='seconds')}")
+    print(f"[HEADLESS] Figures → {FIGS_DIR}")
+    print(f"[HEADLESS] Log     → {FIGS_DIR / 'run.log'}")
 
 from utils.config_loader import load_config, get_intermediate_dir, get_results_dir
 from utils.data_utils import load_jsonl
@@ -134,6 +186,22 @@ else:
     candidates = [uid for uid in uids if _f0_values[uid2idx[uid]].size > 0]
     sample_uids = rng.sample(candidates, min(N_EXAMPLES, len(candidates)))
 
+    # Load pause tiers for just the sampled uids (streaming, no full load)
+    _sampled_set = set(sample_uids)
+    uid2pauses: dict = {}
+    _filt_jsn_p = idir / f"{LANG}_filtered.jsonl"
+    if _filt_jsn_p.exists() and _sampled_set:
+        with open(_filt_jsn_p, encoding="utf-8") as _pf:
+            for _pl in _pf:
+                if not _pl.strip(): continue
+                _pr = json.loads(_pl)
+                if _pr.get("utterance_id") in _sampled_set:
+                    uid2pauses[_pr["utterance_id"]] = (
+                        _pr.get("silent_pauses") or [],
+                        _pr.get("filled_pauses") or [],
+                    )
+                    if len(uid2pauses) >= len(_sampled_set): break
+
     for uid in sample_uids:
         i = uid2idx[uid]
         f0_t  = _f0_times[i].astype(float)
@@ -159,18 +227,31 @@ else:
             fontsize=9, y=1.01
         )
 
+        _silent, _filled = uid2pauses.get(uid, ([], []))
+
+        def _draw_pauses(ax_):
+            for _p in _silent:
+                _s, _e = _p.get("time_s", 0), _p.get("time_e", 0)
+                ax_.axvspan(_s, _e, color="lightblue", alpha=0.4, zorder=0)
+            for _p in _filled:
+                _s, _e = _p.get("time_s", 0), _p.get("time_e", 0)
+                ax_.axvspan(_s, _e, color="orange", alpha=0.30, zorder=0)
+
         # F0 envelope
         ax = axes[0]
+        _draw_pauses(ax)
         f0_valid = ~np.isnan(f0_v)
         if f0_valid.any():
             ax.plot(f0_t[f0_valid], f0_v[f0_valid], color="#E63946", lw=1.2, label="F0")
         for s, e in zip(w_s, w_e):
             ax.axvline(s, color="gray", lw=0.5, alpha=0.4)
         ax.set_ylabel("F0 (Hz)")
-        ax.set_title("F0 envelope")
+        ax.set_title(f"F0 envelope  ·  silent pauses (blue) + filled pauses (orange) shaded  "
+                     f"·  n_silent={len(_silent)} n_filled={len(_filled)}", fontsize=9)
 
         # Intensity envelope
         ax = axes[1]
+        _draw_pauses(ax)
         int_valid = ~np.isnan(int_v)
         if int_valid.any():
             ax.plot(int_t[int_valid], int_v[int_valid], color="#457B9D", lw=1.2, label="Intensity")
@@ -254,11 +335,12 @@ else:
         utt_a = vad_meta.get("arousal", "?")
         n_cov = int(vad_meta.get("vad_n_covered", 0))
         n_w   = len(starts)
+        pct_cov = 100.0 * n_cov / n_w if n_w else 0.0
 
         fig, axes = plt.subplots(3, 1, figsize=(14, 6), sharex=True)
         fig.suptitle(
             f"{uid}  |  sent={sent:.2f}  utt_valence={utt_v:.3f}  "
-            f"utt_arousal={utt_a:.3f}  covered={n_cov}/{n_w} words",
+            f"utt_arousal={utt_a:.3f}  covered={n_cov}/{n_w} words ({pct_cov:.0f}%)",
             fontsize=9, y=1.01
         )
 
@@ -348,6 +430,8 @@ else:
         fig, ax = plt.subplots(figsize=(14, 2.5))
         durations = [w.get("end", 0) - w.get("start", 0) for w in words]
         max_dur = max(durations) if durations else 1
+        # Color = per-word duration. Light yellow = short (fast articulation),
+        # dark red = long (slow articulation / lengthened word).
         cmap = plt.get_cmap("YlOrRd")
 
         for w in words:
@@ -360,15 +444,24 @@ else:
             ax.text((s + e) / 2, 0, word_text, ha="center", va="center",
                     fontsize=7, color="black", clip_on=True)
 
+        # Silent pauses (light blue) and filled pauses (light orange) as shaded spans
         for p in pauses:
             ps = p.get("time_s", p.get("start", 0))
             pe = p.get("time_e", p.get("end", ps))
-            ax.axvspan(ps, pe, color="lightblue", alpha=0.5, label="Silent pause")
+            ax.axvspan(ps, pe, color="lightblue", alpha=0.5)
+        _filled = rec.get("filled_pauses") or []
+        for p in _filled:
+            ps = p.get("time_s", p.get("start", 0))
+            pe = p.get("time_e", p.get("end", ps))
+            ax.axvspan(ps, pe, color="orange", alpha=0.35)
 
         ax.set_yticks([])
-        ax.set_xlabel("Time (s)")
+        ax.set_xlabel(f"Time (s) — word color: light=short duration (fast), dark=long (slow)  ·  "
+                      f"blue span=silent pause  ·  orange span=filled pause",
+                      fontsize=7)
         ax.set_title(
-            f"{uid}  |  sent={sent:.2f}  sr={sr:.2f} wps  n_silent_pauses={n_paus}",
+            f"{uid}  |  sent={sent:.2f}  sr={sr:.2f} wps  "
+            f"n_silent={n_paus}  n_filled={len(_filled)}",
             fontsize=9,
         )
         plt.tight_layout()
@@ -646,6 +739,135 @@ plt.tight_layout()
 plt.show()
 
 # %% [markdown]
+# ## Cell 6b — Global Trend: Per-language + Equal-Language vs Weighted-Speaker
+#
+# For each feature: 5 per-language mean curves (thin), plus two "global" curves:
+#   * Equal-language (bold black solid): mean of per-language curves.
+#     Each language contributes equally regardless of speaker count.
+#   * Weighted-speaker (bold gray dashed): pooled speaker-mean-per-bin across langs.
+#     Bigger corpora dominate; matches config `global_trend_weighting=weighted_speaker`.
+# Reuses `df_all` and `binned_inv` from Cell 6.
+
+# %%
+# CRITICAL for F0: males and females have very different absolute pitch ranges.
+# Pooling raw F0 across genders inflates within-language variance and can flip
+# apparent trends. Toggle SPLIT_BY_GENDER=True for a per-gender view.
+# For publication F0 should either be per-gender or per-speaker z-scored before averaging.
+SPLIT_BY_GENDER = False   # True → separate M/F curves per language + per-gender global means
+
+if not df_all:
+    print("[SKIP] No language DFs loaded (Cell 6 didn't populate df_all).")
+elif SPLIT_BY_GENDER:
+    _GT_FEATS = INV_FEATS
+    _x_gt = 0.5 * (np.linspace(0, 5, N_BINS + 1)[:-1] + np.linspace(0, 5, N_BINS + 1)[1:])
+
+    fig, axes = plt.subplots(2, len(_GT_FEATS), figsize=(len(_GT_FEATS) * 5, 7), squeeze=False)
+    fig.suptitle("Global trend by gender — equal-language (solid) vs weighted-speaker (dashed)",
+                 fontsize=12)
+
+    for row_i, _g in enumerate(["m", "f"]):
+        for col_i, feat in enumerate(_GT_FEATS):
+            ax = axes[row_i][col_i]
+            _per_lang: dict = {}
+            for _lg, _df in df_all.items():
+                if feat not in _df.columns or "gender" not in _df.columns: continue
+                _sub = _df[_df["gender"].str.lower().str[0] == _g].dropna(subset=[feat, "bin"])
+                if _sub.empty: continue
+                _c = _sub.groupby("bin")[feat].mean().reindex(range(N_BINS)).values.astype(float)
+                _per_lang[_lg] = _c
+                ax.plot(_x_gt, _c, color=PALETTE.get(_lg, "#888"), lw=1.1, alpha=0.55, label=_lg)
+            if _per_lang:
+                _eq = np.nanmean(np.vstack(list(_per_lang.values())), axis=0)
+                ax.plot(_x_gt, _eq, color="black", lw=2.2, label="equal-lang")
+                # weighted-speaker per gender
+                _pooled = []
+                for _lg, _df in df_all.items():
+                    if feat not in _df.columns or "gender" not in _df.columns: continue
+                    _sub = _df[_df["gender"].str.lower().str[0] == _g].dropna(subset=[feat, "bin"])
+                    if _sub.empty: continue
+                    _pooled.append(_sub.groupby(["speaker_id", "bin"])[feat].mean().reset_index())
+                if _pooled:
+                    _we = pd.concat(_pooled, ignore_index=True).groupby("bin")[feat].mean() \
+                                                                 .reindex(range(N_BINS)).values
+                    ax.plot(_x_gt, _we, color="#444", lw=1.8, ls="--", label="weighted-spk")
+            _n = sum(((_df["gender"].str.lower().str[0] == _g).sum() if "gender" in _df else 0)
+                     for _df in df_all.values())
+            ax.set_title(f"{FEAT_LABELS.get(feat, feat)}  ·  {_g.upper()} (n={_n:,})", fontsize=9)
+            ax.set_xlabel("Sentiment", fontsize=8)
+            if col_i == 0: ax.set_ylabel(f"{_g.upper()}: {feat}", fontsize=8)
+            ax.legend(fontsize=6, loc="best", ncol=2)
+    plt.tight_layout()
+    plt.show()
+else:
+    _GT_FEATS = INV_FEATS  # same feature set as the SI-anomaly cell
+    _x_gt = 0.5 * (np.linspace(0, 5, N_BINS + 1)[:-1] + np.linspace(0, 5, N_BINS + 1)[1:])
+
+    fig, axes = plt.subplots(1, len(_GT_FEATS), figsize=(len(_GT_FEATS) * 5, 4), squeeze=False)
+    fig.suptitle("Global trend — equal-language vs weighted-speaker  "
+                 "(F0 mixes M+F; toggle SPLIT_BY_GENDER=True for per-gender view)", fontsize=11)
+    axes = axes[0]
+
+    for ax, feat in zip(axes, _GT_FEATS):
+        # Per-language curves (raw scale, no normalisation — we want to see the range)
+        _per_lang_curves: dict = {}
+        for _lg in ALL_LANGS:
+            _c = binned_inv.get((_lg, feat))
+            if _c is None or _c.isna().all():
+                continue
+            _per_lang_curves[_lg] = _c.values.astype(float)
+            ax.plot(_x_gt, _c.values, color=PALETTE.get(_lg, "#888"),
+                    lw=1.2, alpha=0.55, label=_lg)
+
+        if not _per_lang_curves:
+            ax.set_title(f"{FEAT_LABELS.get(feat, feat)}\n(no data)"); continue
+
+        # Equal-language: mean of per-lang curves (nan-safe)
+        _stack = np.vstack(list(_per_lang_curves.values()))
+        _equal = np.nanmean(_stack, axis=0)
+        ax.plot(_x_gt, _equal, color="black", lw=2.4, label="equal-language")
+
+        # Weighted-speaker: per-speaker-bin means pooled across all langs, then mean per bin.
+        # Approximates paper's weighted_speaker option.
+        _pooled = []
+        for _lg, _df in df_all.items():
+            if feat not in _df.columns or "speaker_id" not in _df.columns: continue
+            _sub = _df.dropna(subset=[feat, "bin"])
+            _spk_bin = _sub.groupby(["speaker_id", "bin"])[feat].mean().reset_index()
+            _pooled.append(_spk_bin)
+        if _pooled:
+            _all_spk = pd.concat(_pooled, ignore_index=True)
+            _weighted = _all_spk.groupby("bin")[feat].mean().reindex(range(N_BINS)).values
+            ax.plot(_x_gt, _weighted, color="#444", lw=2.0, ls="--", label="weighted-speaker")
+
+        ax.set_title(FEAT_LABELS.get(feat, feat), fontsize=10)
+        ax.set_xlabel("Sentiment", fontsize=9)
+        ax.set_ylabel(FEAT_LABELS.get(feat, feat), fontsize=9)
+        ax.legend(fontsize=7, loc="best", ncol=2)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Quick numeric summary — divergence between the two weightings
+    print("\nEqual-language vs weighted-speaker divergence (mean |Δ| across bins):")
+    print(f"{'Feature':<20s} {'mean |Δ|':>10s} {'max |Δ|':>10s} {'range(equal)':>14s}")
+    for feat in _GT_FEATS:
+        _cs = [binned_inv[(l, feat)].values.astype(float) for l in ALL_LANGS
+               if (l, feat) in binned_inv]
+        if len(_cs) < 2: continue
+        _eq = np.nanmean(np.vstack(_cs), axis=0)
+        _pooled = []
+        for _lg, _df in df_all.items():
+            if feat not in _df.columns: continue
+            _sub = _df.dropna(subset=[feat, "bin"])
+            _pooled.append(_sub.groupby(["speaker_id", "bin"])[feat].mean().reset_index())
+        if not _pooled: continue
+        _we = pd.concat(_pooled, ignore_index=True).groupby("bin")[feat].mean() \
+                                                    .reindex(range(N_BINS)).values
+        _d = np.abs(_eq - _we)
+        print(f"{FEAT_LABELS.get(feat, feat):<20s} {np.nanmean(_d):>10.4f} "
+              f"{np.nanmax(_d):>10.4f} {np.nanmax(_eq) - np.nanmin(_eq):>14.4f}")
+
+# %% [markdown]
 # ## Cell 7 — Praat vs OpenSMILE: Systematic Correlation Table + Heatmap
 #
 # Auto-discovers OpenSMILE column names, computes Pearson r + Spearman r for
@@ -880,17 +1102,31 @@ def _load_topic_map(jsonl_path: Path, target_ids: set, field: str) -> dict[str, 
 
 from scipy.stats import f_oneway as _f_oneway
 
-_topic_field = None
-for _lang in [LANG] + [l for l in ALL_LANGS if l != LANG]:
-    _v4_path = _JSONL_DIR / f"ParlaSpeech-{_lang}.v4.0.patched.jsonl"
-    if _v4_path.exists():
-        _topic_field = _discover_topic_field(_v4_path)
-        if _topic_field:
-            print(f"Auto-discovered topic field: '{_topic_field}' (from {_lang})")
-            break
+# Prefer topic from filtered JSONL (10_filter.py v1.02+ preserves it).
+# Fall back to raw v4 JSONL discovery only when filtered has no topic column.
+_filt_has_topic = False
+_probe_filt = idir / f"{LANG}_filtered.jsonl"
+if _probe_filt.exists():
+    with open(_probe_filt) as _pf:
+        _first_line = next((l for l in _pf if l.strip()), None)
+    if _first_line:
+        _first_rec = json.loads(_first_line)
+        _filt_has_topic = _first_rec.get("topic") is not None
+
+_topic_field = "topic" if _filt_has_topic else None
+if _filt_has_topic:
+    print(f"Using 'topic' column from filtered JSONL (no raw v4 access needed).")
+else:
+    for _lang in [LANG] + [l for l in ALL_LANGS if l != LANG]:
+        _v4_path = _JSONL_DIR / f"ParlaSpeech-{_lang}.v4.0.patched.jsonl"
+        if _v4_path.exists():
+            _topic_field = _discover_topic_field(_v4_path)
+            if _topic_field:
+                print(f"Filtered JSONL missing topic; auto-discovered '{_topic_field}' from raw v4 ({_lang}).")
+                break
 
 if _topic_field is None:
-    print("No topic field found in JSONL. Skipping CAP cell.")
+    print("No topic field found (rerun 10_filter.py v1.02+ to preserve topic). Skipping CAP cell.")
 else:
     # --- Per-language ANOVA ---
     print(f"\n--- Per-language ANOVA: features by topic (field='{_topic_field}') ---")
@@ -900,8 +1136,12 @@ else:
         _v4_path  = _JSONL_DIR / f"ParlaSpeech-{_lang}.v4.0.patched.jsonl"
         _feat_tsv = idir / f"{_lang}_praat.tsv"
         _filt_jsn = idir / f"{_lang}_filtered.jsonl"
-        if not (_v4_path.exists() and _feat_tsv.exists() and _filt_jsn.exists()):
+        # Filtered JSONL is required; raw v4 only if we're falling back
+        if not (_feat_tsv.exists() and _filt_jsn.exists()):
             print(f"[{_lang}] Missing files, skipping.")
+            continue
+        if not _filt_has_topic and not _v4_path.exists():
+            print(f"[{_lang}] Missing raw v4 (fallback source), skipping.")
             continue
 
         if TEST_RUN:
@@ -912,8 +1152,13 @@ else:
                     if _l.strip(): _filt_recs.append(json.loads(_l))
         else:
             _filt_recs = [json.loads(l) for l in open(_filt_jsn) if l.strip()]
-        _target_ids = {r["utterance_id"] for r in _filt_recs}
-        _topic_map  = _load_topic_map(_v4_path, _target_ids, _topic_field)
+
+        if _filt_has_topic:
+            _topic_map = {r["utterance_id"]: str(r["topic"])
+                          for r in _filt_recs if r.get("topic") is not None}
+        else:
+            _target_ids = {r["utterance_id"] for r in _filt_recs}
+            _topic_map  = _load_topic_map(_v4_path, _target_ids, _topic_field)
 
         _feat_df = pd.read_csv(_feat_tsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
         _feat_df["_topic"] = _feat_df["utterance_id"].map(_topic_map)

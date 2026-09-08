@@ -2,9 +2,12 @@
 # ============================================================
 # Script:  10_filter.py
 # Release: 1.0
-# Version: v1.01
+# Version: v1.02
 # Purpose: Filter ParlaSpeech v4 JSONL by word count and speaker
 #          sentiment coverage. Outputs one compact JSONL per language.
+#
+# v1.02: Auto-discover topic-like field (CAP/topic/subject) and preserve as
+#        `topic` in filtered JSONL so downstream cells don't need raw v4 access.
 #
 # Input:   {data_root}/ParlaSpeech-{LANG}.v4.0.patched.jsonl
 # Output:  {intermediate_dir}/{lang}_filtered.jsonl
@@ -34,6 +37,37 @@ def parse_args():
     p.add_argument("--dry-run", action="store_true",
                    help="Print stats but do not write output")
     return p.parse_args()
+
+
+_TOPIC_KEYWORDS = ("topic", "cap", "category", "subject", "policy", "issue")
+
+
+def _discover_topic_field(records: list[dict], n_probe: int = 200) -> str | None:
+    """Return the most-common topic-like field (dot-path if nested) from probing records."""
+    candidates: dict[str, int] = {}
+    for rec in records[:n_probe]:
+        flat = {}
+        for k, v in rec.items():
+            if isinstance(v, dict):
+                for kk, vv in v.items():
+                    flat[f"{k}.{kk}"] = vv
+            else:
+                flat[k] = v
+        for fk, fv in flat.items():
+            if any(kw in fk.lower() for kw in _TOPIC_KEYWORDS):
+                if isinstance(fv, (str, int, float)) and fv not in (None, ""):
+                    candidates[fk] = candidates.get(fk, 0) + 1
+    return max(candidates, key=candidates.get) if candidates else None
+
+
+def _get_topic(rec: dict, field: str | None):
+    if not field:
+        return None
+    parts = field.split(".", 1)
+    if len(parts) == 1:
+        return rec.get(parts[0])
+    outer = rec.get(parts[0])
+    return outer.get(parts[1]) if isinstance(outer, dict) else None
 
 
 def _normalize_words_align(words_raw: list, text: str, wa_fields: dict) -> list:
@@ -77,6 +111,12 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
     faudio = fields["audio_path"]
     fgender = fields.get("gender", "gender")
 
+    topic_field = _discover_topic_field(records)
+    if topic_field:
+        print(f"  [topic] Auto-discovered field: '{topic_field}'")
+    else:
+        print(f"  [topic] No topic-like field found; 'topic' column will be null")
+
     # Pass 1: word count
     pass1 = []
     n_no_words = 0
@@ -109,6 +149,7 @@ def filter_language(records: list[dict], cfg: dict) -> tuple[list[dict], dict]:
                 "gender": get_nested(rec, fgender),
                 "silent_pauses": rec.get("silent_pauses") or [],
                 "filled_pauses": rec.get("filled_pauses") or [],
+                "topic":         _get_topic(rec, topic_field),
             })
 
     # Pass 2: speaker coverage

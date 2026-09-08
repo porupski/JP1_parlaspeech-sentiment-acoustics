@@ -92,6 +92,16 @@ Run from the repo root directory. The notebook detects its own location so kerne
 
 Set `TEST_RUN = True` in the Setup cell to cap all data loads to 1 000 rows/records per language — useful for a quick smoke-test without waiting for full TSV/JSONL loads.
 
+For overnight/batch runs (no display, tmux-friendly), use headless mode. Every figure is saved as PNG and all stdout is tee'd to `run.log`:
+
+```bash
+python 5_debug/50_explore.py --headless
+# outputs → logs/explore_<YYYYMMDD_HHMMSS>/fig_NNN.png + run.log
+
+python 5_debug/50_explore.py --save-figs results/explore_full
+# same, but pins the output directory
+```
+
 ---
 
 ## Directory structure
