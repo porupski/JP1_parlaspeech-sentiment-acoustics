@@ -2,14 +2,19 @@
 # ============================================================
 # Script:  50_explore.py  (Jupyter-compatible notebook)
 # Release: 1.0
-# Version: v1.00
+# Version: v1.02
 # Purpose: Debug and exploration for ParlaSpeech sentiment-acoustics.
 #          Envelope viewer, speechrate+transcript, general replotters,
 #          Praat vs OpenSMILE comparison, per-language anomaly inspector.
 #
 # Usage:   Open in VS Code with Jupyter extension (cells = # %% blocks)
-#          Convert: jupytext --to notebook 50_explore.py
-#          Run from: JP1_parlaspeech-sentiment-acoustics/ directory
+#          Convert: jupytext --to notebook 5_debug/50_explore.py --output 5_debug/50_explore.ipynb
+#          Run from: JP1_parlaspeech-sentiment-acoustics/ directory (kernel CWD irrelevant — paths are absolute)
+#
+# v1.02: idir/rdir now absolute (_repo_root-anchored) — no more kernel CWD dependency.
+#        TEST_RUN=True caps all loads to TEST_RUN_N=1000 (JSONL: early-stop; TSV: nrows=).
+#        Fixed VOWELS in Cell 3 (removed consonants HR/RS/SI). Version v1.01 skipped.
+# v1.00: Initial notebook.
 # ============================================================
 
 # %% [markdown]
@@ -52,15 +57,16 @@ LANG       = "SI"    # HR, CZ, PL, RS, SI
 SEED       = 42      # reproducible sample; ignored when REROLL=True
 N_EXAMPLES = 6       # utterances to display per cell
 REROLL     = False   # True = new random sample each run
-TEST_RUN   = False   # True = load only first TEST_RUN_N records (fast smoke-test)
-TEST_RUN_N = 5_000
+TEST_RUN   = False   # True = cap every data load to TEST_RUN_N rows/records
+TEST_RUN_N = 1_000
 # ────────────────────────────────────────────────────────────────────────────
 
 rng = random.Random(None if REROLL else SEED)
 
-cfg   = load_config()  # auto-locates config.json relative to utils/
-idir  = get_intermediate_dir(cfg)
-rdir  = get_results_dir(cfg)
+cfg   = load_config()  # auto-locates config.json via utils/__file__, not CWD
+# Always absolute — idir/rdir are correct regardless of kernel CWD
+idir  = (_repo_root / cfg["paths"]["intermediate_dir"]).resolve()
+rdir  = (_repo_root / cfg["paths"]["results_dir"]).resolve()
 
 PALETTE = {
     "HR": "#E63946", "CZ": "#2A9D8F", "PL": "#E9C46A",
@@ -69,11 +75,13 @@ PALETTE = {
 
 # Load features TSV for LANG (if present)
 feats_path = idir / f"{LANG}_features.tsv"
-df_feats = pd.read_csv(feats_path, sep="\t") if feats_path.exists() else pd.DataFrame()
+_nrows = TEST_RUN_N if TEST_RUN else None
+df_feats = pd.read_csv(feats_path, sep="\t", nrows=_nrows) if feats_path.exists() else pd.DataFrame()
 if df_feats.empty:
     print(f"[WARN] {feats_path} not found — feature columns unavailable in some cells.")
 else:
-    print(f"Loaded {len(df_feats):,} utterances from {feats_path.name}")
+    _cap = f" (TEST_RUN cap={TEST_RUN_N:,})" if TEST_RUN else ""
+    print(f"Loaded {len(df_feats):,} utterances from {feats_path.name}{_cap}")
     print(f"  Columns: {list(df_feats.columns[:12])} ...")
 
 # %% [markdown]
@@ -270,10 +278,18 @@ lang_vowels = VOWELS.get(LANG, set("aeiouAEIOU"))
 if not jsonl_path.exists():
     print(f"[SKIP] {jsonl_path} not found.")
 else:
-    records = load_jsonl(jsonl_path)
     if TEST_RUN:
-        records = records[:TEST_RUN_N]
-        print(f"[TEST_RUN] Sliced to {len(records):,} records.")
+        records = []
+        with open(jsonl_path, encoding="utf-8") as _f:
+            for _line in _f:
+                if len(records) >= TEST_RUN_N:
+                    break
+                _line = _line.strip()
+                if _line:
+                    records.append(json.loads(_line))
+        print(f"[TEST_RUN] Loaded {len(records):,} records (capped at {TEST_RUN_N:,}).")
+    else:
+        records = load_jsonl(jsonl_path)
     # Filter to utterances that have speechrate in features and word timing
     has_words = [r for r in records if r.get("words_align")]
     if not df_feats.empty:
@@ -356,7 +372,7 @@ for lang in PLOT_LANGS:
     if not fp.exists():
         print(f"[{lang}] features TSV not found")
         continue
-    df = pd.read_csv(fp, sep="\t")
+    df = pd.read_csv(fp, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
     df["bin"] = pd.cut(df["sentiment_score"],
                        bins=np.linspace(0, 5, N_BINS + 1),
                        labels=False, include_lowest=True)
@@ -520,7 +536,7 @@ for lang in ALL_LANGS:
     fp = idir / f"{lang}_features.tsv"
     if not fp.exists():
         continue
-    df = pd.read_csv(fp, sep="\t")
+    df = pd.read_csv(fp, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
     df["bin"] = pd.cut(df["sentiment_score"],
                        bins=np.linspace(0, 5, N_BINS + 1),
                        labels=False, include_lowest=True)

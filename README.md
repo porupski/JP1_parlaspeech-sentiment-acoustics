@@ -80,6 +80,20 @@ filter → speechrate → praat → opensmile → normalize → join
 
 ---
 
+## Debug notebook
+
+`5_debug/50_explore.py` is a Jupyter-compatible percent-script. Open it directly in VS Code (Jupyter extension) or convert to `.ipynb`:
+
+```bash
+jupytext --to notebook 5_debug/50_explore.py --output 5_debug/50_explore.ipynb
+```
+
+Run from the repo root directory. The notebook detects its own location so kernel CWD does not matter.
+
+Set `TEST_RUN = True` in the Setup cell to cap all data loads to 1 000 rows/records per language — useful for a quick smoke-test without waiting for full TSV/JSONL loads.
+
+---
+
 ## Directory structure
 
 ```
