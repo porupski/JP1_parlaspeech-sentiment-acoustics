@@ -1,9 +1,11 @@
 # ============================================================
 # Script:  extraction.py
 # Release: 1.0
-# Version: v1.10
+# Version: v1.11
 # Purpose: Praat and speech-rate feature extraction from audio + word alignments.
 #
+# v1.11: extract_speechrate_utterance: add n_chars + speechrate_cps (chars/s).
+#        Char rate is language-agnostic; replaces syllable counting as primary proxy.
 # v1.10 changes:
 #   - Added F1/F2/F3, HNR (word-level), jitter/shimmer/HNR_utt (utterance-level)
 #   - Analysis objects (Pitch, Intensity, Formant, Harmonicity) computed once per
@@ -416,7 +418,7 @@ def extract_speechrate_utterance(words_align: list[dict],
     filled_pauses: list of v4 filled_pauses tier entries
 
     Outputs:
-        n_words, n_syllables
+        n_words, n_syllables, n_chars
         duration_total:     full utterance span (last_word_end - first_word_start)
         duration_speech:    sum of word durations
         pause_ratio_all:    (total - speech) / total  [old metric, kept for comparison]
@@ -425,13 +427,14 @@ def extract_speechrate_utterance(words_align: list[dict],
         n_filled_pauses, dur_filled
         speechrate_wps:     words / duration_speech
         speechrate_sps:     syllables / duration_speech
+        speechrate_cps:     chars / duration_speech   [primary proxy — language-agnostic]
     """
     _null_keys = [
-        "n_words", "n_syllables", "duration_total", "duration_speech",
+        "n_words", "n_syllables", "n_chars", "duration_total", "duration_speech",
         "pause_ratio_all", "pause_ratio_silent",
         "n_silent_pauses", "dur_silent",
         "n_filled_pauses", "dur_filled",
-        "speechrate_wps", "speechrate_sps",
+        "speechrate_wps", "speechrate_sps", "speechrate_cps",
     ]
     if not words_align:
         return {k: None for k in _null_keys}
@@ -442,6 +445,7 @@ def extract_speechrate_utterance(words_align: list[dict],
 
     n_words      = len(words)
     n_syllables  = sum(count_syllables(w, lang) for w in words)
+    n_chars      = sum(len(w) for w in words)
     duration_total   = ends[-1] - starts[0]
     duration_speech  = sum(e - s for s, e in zip(starts, ends))
 
@@ -459,22 +463,24 @@ def extract_speechrate_utterance(words_align: list[dict],
 
     if duration_total <= 0 or duration_speech <= 0:
         return {
-            "n_words": n_words, "n_syllables": n_syllables,
+            "n_words": n_words, "n_syllables": n_syllables, "n_chars": n_chars,
             "duration_total": duration_total, "duration_speech": duration_speech,
             "pause_ratio_all": None, "pause_ratio_silent": None,
             "n_silent_pauses": n_silent, "dur_silent": dur_silent,
             "n_filled_pauses": n_filled, "dur_filled": dur_filled,
-            "speechrate_wps": None, "speechrate_sps": None,
+            "speechrate_wps": None, "speechrate_sps": None, "speechrate_cps": None,
         }
 
     pause_ratio_all    = (duration_total - duration_speech) / duration_total
     pause_ratio_silent = dur_silent / duration_total
     speechrate_wps     = n_words / duration_speech
     speechrate_sps     = n_syllables / duration_speech if n_syllables > 0 else None
+    speechrate_cps     = n_chars / duration_speech if n_chars > 0 else None
 
     return {
         "n_words":           n_words,
         "n_syllables":       n_syllables,
+        "n_chars":           n_chars,
         "duration_total":    duration_total,
         "duration_speech":   duration_speech,
         "pause_ratio_all":   pause_ratio_all,
@@ -485,4 +491,5 @@ def extract_speechrate_utterance(words_align: list[dict],
         "dur_filled":        dur_filled,
         "speechrate_wps":    speechrate_wps,
         "speechrate_sps":    speechrate_sps,
+        "speechrate_cps":    speechrate_cps,
     }

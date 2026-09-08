@@ -21,6 +21,7 @@
 # %% Setup — run this first
 import sys
 import json
+import os
 import random
 import warnings
 import numpy as np
@@ -35,20 +36,24 @@ plt.style.use("seaborn-v0_8-whitegrid")
 
 try:
     # Running as a script: __file__ is defined
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    _repo_root = Path(__file__).resolve().parent.parent
 except NameError:
     # Running as a notebook cell: walk up from CWD to find project root
     _cwd = Path(".").resolve()
-    sys.path.insert(0, str(_cwd.parent if _cwd.name == "5_debug" else _cwd))
+    _repo_root = _cwd.parent if _cwd.name == "5_debug" else _cwd
+sys.path.insert(0, str(_repo_root))
+os.chdir(_repo_root)   # make relative paths (data/intermediate/…) resolve from repo root
 
 from utils.config_loader import load_config, get_intermediate_dir, get_results_dir
 from utils.data_utils import load_jsonl
 
 # ── Configure here ──────────────────────────────────────────────────────────
-LANG    = "SI"    # HR, CZ, PL, RS, SI
-SEED    = 42      # reproducible sample; ignored when REROLL=True
-N_EXAMPLES = 6    # utterances to display per cell
-REROLL  = False   # True = new random sample each run
+LANG       = "SI"    # HR, CZ, PL, RS, SI
+SEED       = 42      # reproducible sample; ignored when REROLL=True
+N_EXAMPLES = 6       # utterances to display per cell
+REROLL     = False   # True = new random sample each run
+TEST_RUN   = False   # True = load only first TEST_RUN_N records (fast smoke-test)
+TEST_RUN_N = 5_000
 # ────────────────────────────────────────────────────────────────────────────
 
 rng = random.Random(None if REROLL else SEED)
@@ -252,13 +257,13 @@ else:
 # %%
 jsonl_path = idir / f"{LANG}_filtered.jsonl"
 
-# Vowel sets per language
+# Vowel sets for transcript highlighting only (synced with extraction.py)
 VOWELS = {
-    "HR": set("aeiouAEIOUčšžćđČŠŽĆĐ"),
-    "CZ": set("aeiouáéíóúůýAEIOUÁÉÍÓÚŮÝ"),
-    "PL": set("aeiouąęóAEIOUĄĘÓ"),
-    "RS": set("aeiouAEIOUčšžćđČŠŽĆĐ"),
-    "SI": set("aeiouAEIOUčšžČŠŽ"),
+    "HR": set("aeiouAEIOUáéíóúÁÉÍÓÚàèìòùÀÈÌÒÙ"),
+    "CZ": set("aeiouAEIOUáéíóúýÁÉÍÓÚÝůŮěĚ"),
+    "PL": set("aeiouAEIOUáéíóúÁÉÍÓÚąęóĄĘÓ"),
+    "RS": set("aeiouAEIOUáéíóúÁÉÍÓÚàèìòùÀÈÌÒÙ"),
+    "SI": set("aeiouAEIOUáéíóúÁÉÍÓÚ"),
 }
 lang_vowels = VOWELS.get(LANG, set("aeiouAEIOU"))
 
@@ -266,6 +271,9 @@ if not jsonl_path.exists():
     print(f"[SKIP] {jsonl_path} not found.")
 else:
     records = load_jsonl(jsonl_path)
+    if TEST_RUN:
+        records = records[:TEST_RUN_N]
+        print(f"[TEST_RUN] Sliced to {len(records):,} records.")
     # Filter to utterances that have speechrate in features and word timing
     has_words = [r for r in records if r.get("words_align")]
     if not df_feats.empty:

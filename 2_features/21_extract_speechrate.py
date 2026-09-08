@@ -2,13 +2,12 @@
 # ============================================================
 # Script:  21_extract_speechrate.py
 # Release: 1.0
-# Version: v1.01
+# Version: v1.02
 # Purpose: Compute speech rate and pause features from word-level timing.
 #          No audio needed — uses alignment data from filtered JSONL.
 #
-# Input:   {intermediate_dir}/{lang}_filtered.jsonl
-# Output:  {intermediate_dir}/{lang}_speechrate.tsv
-#
+# v1.02: Added n_chars + speechrate_cps (chars/s). Char rate is language-agnostic
+#        and replaces syllable counting as primary proxy.
 # v1.01: Added pause breakdown from v4 silent_pauses + filled_pauses tiers.
 #        pause_ratio renamed to pause_ratio_all (old formula).
 #        pause_ratio_silent (confirmed silent pause duration / total) is new main metric.
@@ -65,6 +64,8 @@ def main():
         df = pd.DataFrame(rows)
         n = len(df)
         print(f"  speechrate_wps valid:     {df['speechrate_wps'].notna().sum():,}/{n:,}")
+        print(f"  speechrate_cps valid:     {df['speechrate_cps'].notna().sum():,}/{n:,}")
+        print(f"  n_chars mean:             {df['n_chars'].mean():.1f}")
         print(f"  pause_ratio_silent valid: {df['pause_ratio_silent'].notna().sum():,}/{n:,}")
         print(f"  n_silent_pauses mean:     {df['n_silent_pauses'].mean():.2f}")
         print(f"  n_filled_pauses mean:     {df['n_filled_pauses'].mean():.2f}")
