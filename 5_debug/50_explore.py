@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  50_explore.py  (Jupyter-compatible notebook)
 # Release: 1.0
-# Version: v1.06
+# Version: v1.07
 # Purpose: Debug and exploration for ParlaSpeech sentiment-acoustics.
 #          Envelope viewer, speechrate+transcript, general replotters,
 #          Praat vs OpenSMILE comparison, per-language anomaly inspector.
@@ -11,6 +11,12 @@
 #          Convert: jupytext --to notebook 5_debug/50_explore.py --output 5_debug/50_explore.ipynb
 #          Run from: JP1_parlaspeech-sentiment-acoustics/ directory (kernel CWD irrelevant — paths are absolute)
 #
+# v1.07: LANGS list drives all single-lang cells (previously LANG='SI' only ran SI).
+#        Every plt.show() replaced with save_fig(descriptive_name) so headless PNGs
+#        have meaningful filenames (e.g. cell02_envelope_SI_example03_<uid>.png).
+#        Cell 8 gains per-language + GLOBAL merged Spearman ρ table for VAD.
+#        Helpers extracted to 5_debug/explore_utils.py (FigSaver, logprint, ...).
+#        Every numeric that appears on a plot now also goes to stdout via logprint().
 # v1.06: --headless / --save-figs flags. In headless mode: matplotlib=Agg,
 #        plt.show → savefig+close, stdout tee'd to logs/explore_<ts>/run.log.
 #        Cell 6b gains SPLIT_BY_GENDER toggle (critical for F0 — M/F ranges
@@ -79,20 +85,15 @@ except NameError:
     _cwd = Path(".").resolve()
     _repo_root = _cwd.parent if _cwd.name == "5_debug" else _cwd
 sys.path.insert(0, str(_repo_root))
+sys.path.insert(0, str(_repo_root / "5_debug"))   # for explore_utils import
 os.chdir(_repo_root)   # make relative paths (data/intermediate/…) resolve from repo root
 
 # --- Headless setup: fig-dir + stdout tee to log file ---
+FIGS_DIR = None
 if HEADLESS:
     FIGS_DIR = (Path(_args_ns.save_figs).resolve() if _args_ns.save_figs
                 else (_repo_root / "logs" / f"explore_{_dt.now().strftime('%Y%m%d_%H%M%S')}").resolve())
     FIGS_DIR.mkdir(parents=True, exist_ok=True)
-    _fig_state = {"n": 0}
-    def _save_show(*_a, **_kw):
-        _fig_state["n"] += 1
-        _fp = FIGS_DIR / f"fig_{_fig_state['n']:03d}.png"
-        plt.gcf().savefig(_fp, dpi=120, bbox_inches="tight")
-        plt.close("all")
-    plt.show = _save_show   # every plt.show() now saves + closes; no display
 
     class _Tee:
         def __init__(self, *streams): self._s = streams
@@ -110,11 +111,20 @@ if HEADLESS:
 
 from utils.config_loader import load_config, get_intermediate_dir, get_results_dir
 from utils.data_utils import load_jsonl
+from explore_utils import FigSaver, logprint, zscore_per_speaker, \
+    binned_speaker_mean, clean_trend_plot, spearman_report
+
+save_fig = FigSaver(FIGS_DIR, HEADLESS)   # every plot: save_fig("descriptive_name")
 
 # ── Configure here ──────────────────────────────────────────────────────────
-LANG       = "SI"    # HR, CZ, PL, RS, SI
+# LANGS drives every per-language loop. Single-lang cells (envelope viewers,
+# transcript, praat vs osmile, VAD) iterate through LANGS. If you only want
+# one language, put one code in the list. All-lang cells use ALL_LANGS.
+LANGS      = ["SI"]                          # e.g. ["HR","CZ","PL","RS","SI"]
+LANG       = LANGS[0]                        # back-compat alias for single-lang code paths
+ALL_LANGS  = ["HR", "CZ", "PL", "RS", "SI"]  # used by global-trend and cross-lang cells
 SEED       = 42      # reproducible sample; ignored when REROLL=True
-N_EXAMPLES = 6       # utterances to display per cell
+N_EXAMPLES = 6       # utterances to display per envelope cell (per language)
 REROLL     = False   # True = new random sample each run
 TEST_RUN   = False   # True = cap every data load to TEST_RUN_N rows/records
 TEST_RUN_N = 1_000
@@ -151,11 +161,17 @@ else:
 # Word boundaries are drawn as vertical lines.
 
 # %%
-npz_path = idir / f"{LANG}_praat_envelopes.npz"
+for _L in LANGS:
+    print(f"\n=== Cell 2 · {_L} · Praat envelope viewer ===")
+    npz_path = idir / f"{_L}_praat_envelopes.npz"
+    if not npz_path.exists():
+        print(f"[{_L}] SKIP: {npz_path.name} not found. Run 20_extract_praat.py first.")
+        continue
 
-if not npz_path.exists():
-    print(f"[SKIP] {npz_path} not found. Run 20_extract_praat.py first.")
-else:
+    _feats_path_L = idir / f"{_L}_features.tsv"
+    _df_feats_L = pd.read_csv(_feats_path_L, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None) \
+                  if _feats_path_L.exists() else pd.DataFrame()
+
     data = np.load(npz_path, allow_pickle=True)
     # CRITICAL: cache arrays. NpzFile.__getitem__ decompresses + unpickles the
     # ENTIRE object array on every call. Any `data[key]` inside a loop is a
@@ -178,18 +194,19 @@ else:
 
     # Build a lookup from features TSV
     uid2meta = {}
-    if not df_feats.empty:
-        for _, row in df_feats.iterrows():
+    if not _df_feats_L.empty:
+        for _, row in _df_feats_L.iterrows():
             uid2meta[row["utterance_id"]] = row
 
     # Sample N utterances that have F0 data
     candidates = [uid for uid in uids if _f0_values[uid2idx[uid]].size > 0]
     sample_uids = rng.sample(candidates, min(N_EXAMPLES, len(candidates)))
+    print(f"[{_L}] Sampling {len(sample_uids)} envelope examples from {len(candidates):,} candidates")
 
     # Load pause tiers for just the sampled uids (streaming, no full load)
     _sampled_set = set(sample_uids)
     uid2pauses: dict = {}
-    _filt_jsn_p = idir / f"{LANG}_filtered.jsonl"
+    _filt_jsn_p = idir / f"{_L}_filtered.jsonl"
     if _filt_jsn_p.exists() and _sampled_set:
         with open(_filt_jsn_p, encoding="utf-8") as _pf:
             for _pl in _pf:
@@ -202,7 +219,7 @@ else:
                     )
                     if len(uid2pauses) >= len(_sampled_set): break
 
-    for uid in sample_uids:
+    for _ex_i, uid in enumerate(sample_uids, 1):
         i = uid2idx[uid]
         f0_t  = _f0_times[i].astype(float)
         f0_v  = _f0_values[i].astype(float)
@@ -215,15 +232,19 @@ else:
         f3_w  = _f3_word_median[i].astype(float)
 
         meta = uid2meta.get(uid, {})
-        sent  = meta.get("sentiment_score", "?")
+        _fmt = lambda v: f"{v:.2f}" if isinstance(v, (int, float)) and v == v else "?"
+        sent  = meta.get("sentiment_score")
         label = meta.get("sentiment_label", "?")
         n_w   = meta.get("n_words", "?")
-        f0_sc = meta.get("f0_raw", "?")
+        f0_sc = meta.get("f0_raw")
         spk   = meta.get("speaker_id", "?")
+        logprint(f"[{_L}] example {_ex_i}/{len(sample_uids)} uid={uid}",
+                 f"spk={spk} sent={_fmt(sent)} label={label} n_words={n_w} f0_raw={_fmt(f0_sc)}",
+                 indent=1)
 
         fig, axes = plt.subplots(3, 1, figsize=(14, 7), sharex=False)
         fig.suptitle(
-            f"{uid}  |  spk={spk}  sent={sent:.2f} ({label})  n_words={n_w}  f0_raw={f0_sc}",
+            f"[{_L}] {uid}  |  spk={spk}  sent={_fmt(sent)} ({label})  n_words={n_w}  f0_raw={_fmt(f0_sc)}",
             fontsize=9, y=1.01
         )
 
@@ -276,7 +297,7 @@ else:
         ax.legend(fontsize=8, loc="upper right")
 
         plt.tight_layout()
-        plt.show()
+        save_fig(f"cell02_envelope_{_L}_example{_ex_i:02d}_{uid[:60]}")
 
 # %% [markdown]
 # ## Cell 2b — VAD Word Envelope Viewer
@@ -286,12 +307,14 @@ else:
 # Aligned to word timing from v4 words[], same x-axis as F0 envelopes.
 
 # %%
-vad_npz_path = idir / f"{LANG}_vad_envelopes.npz"
-vad_tsv_path = idir / f"{LANG}_vad.tsv"
+for _L in LANGS:
+    print(f"\n=== Cell 2b · {_L} · VAD envelope viewer ===")
+    vad_npz_path = idir / f"{_L}_vad_envelopes.npz"
+    vad_tsv_path = idir / f"{_L}_vad.tsv"
+    if not vad_npz_path.exists():
+        print(f"[{_L}] SKIP: {vad_npz_path.name} not found. Run 35_vad.py with save_vad_envelopes=true.")
+        continue
 
-if not vad_npz_path.exists():
-    print(f"[SKIP] {vad_npz_path} not found. Run 35_vad.py with save_vad_envelopes=true.")
-else:
     vdata = np.load(vad_npz_path, allow_pickle=True)
     # Cache arrays (see Cell 2 comment — NpzFile decompresses per __getitem__)
     _v_uids_all  = vdata["utterance_ids"]
@@ -313,14 +336,24 @@ else:
         for _, row in df_vad.iterrows():
             uid2vad[row["utterance_id"]] = row
 
+    # Rebuild uid2meta from this language's features TSV
+    _feats_path_L = idir / f"{_L}_features.tsv"
+    _df_feats_L = pd.read_csv(_feats_path_L, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None) \
+                  if _feats_path_L.exists() else pd.DataFrame()
+    uid2meta = {}
+    if not _df_feats_L.empty:
+        for _, row in _df_feats_L.iterrows():
+            uid2meta[row["utterance_id"]] = row
+
     # Sample utterances with ≥1 covered word
     candidates_v = [
         uid for uid in vad_uids
         if np.any(~np.isnan(_v_valences[vuid2idx[uid]].astype(float)))
     ]
     sample_v_uids = rng.sample(candidates_v, min(N_EXAMPLES, len(candidates_v)))
+    print(f"[{_L}] Sampling {len(sample_v_uids)} VAD examples from {len(candidates_v):,} covered utterances")
 
-    for uid in sample_v_uids:
+    for _ex_i, uid in enumerate(sample_v_uids, 1):
         i = vuid2idx[uid]
         starts    = _v_wstarts[i].astype(float)
         ends      = _v_wends[i].astype(float)
@@ -330,17 +363,22 @@ else:
 
         meta = uid2meta.get(uid, {})
         vad_meta = uid2vad.get(uid, {})
-        sent  = meta.get("sentiment_score", "?")
-        utt_v = vad_meta.get("valence", "?")
-        utt_a = vad_meta.get("arousal", "?")
+        _fmt = lambda v, p=2: f"{v:.{p}f}" if isinstance(v, (int, float)) and v == v else "?"
+        sent  = meta.get("sentiment_score")
+        utt_v = vad_meta.get("valence")
+        utt_a = vad_meta.get("arousal")
         n_cov = int(vad_meta.get("vad_n_covered", 0))
         n_w   = len(starts)
         pct_cov = 100.0 * n_cov / n_w if n_w else 0.0
+        logprint(f"[{_L}] VAD example {_ex_i}/{len(sample_v_uids)} uid={uid}",
+                 f"sent={_fmt(sent)} utt_v={_fmt(utt_v,3)} utt_a={_fmt(utt_a,3)} "
+                 f"covered={n_cov}/{n_w} ({pct_cov:.0f}%)",
+                 indent=1)
 
         fig, axes = plt.subplots(3, 1, figsize=(14, 6), sharex=True)
         fig.suptitle(
-            f"{uid}  |  sent={sent:.2f}  utt_valence={utt_v:.3f}  "
-            f"utt_arousal={utt_a:.3f}  covered={n_cov}/{n_w} words ({pct_cov:.0f}%)",
+            f"[{_L}] {uid}  |  sent={_fmt(sent)}  utt_valence={_fmt(utt_v,3)}  "
+            f"utt_arousal={_fmt(utt_a,3)}  covered={n_cov}/{n_w} words ({pct_cov:.0f}%)",
             fontsize=9, y=1.01
         )
 
@@ -368,7 +406,7 @@ else:
 
         axes[-1].set_xlabel("Time (s)", fontsize=9)
         plt.tight_layout()
-        plt.show()
+        save_fig(f"cell02b_vadenv_{_L}_example{_ex_i:02d}_{uid[:60]}")
 
 
 # %% [markdown]
@@ -378,8 +416,6 @@ else:
 # silent_pauses as shaded regions, transcript text with vowels marked.
 
 # %%
-jsonl_path = idir / f"{LANG}_filtered.jsonl"
-
 # Vowel sets for transcript highlighting only (synced with extraction.py)
 VOWELS = {
     "HR": set("aeiouAEIOUáéíóúÁÉÍÓÚàèìòùÀÈÌÒÙ"),
@@ -388,11 +424,20 @@ VOWELS = {
     "RS": set("aeiouAEIOUáéíóúÁÉÍÓÚàèìòùÀÈÌÒÙ"),
     "SI": set("aeiouAEIOUáéíóúÁÉÍÓÚ"),
 }
-lang_vowels = VOWELS.get(LANG, set("aeiouAEIOU"))
 
-if not jsonl_path.exists():
-    print(f"[SKIP] {jsonl_path} not found.")
-else:
+for _L in LANGS:
+    print(f"\n=== Cell 3 · {_L} · Speechrate + transcript viewer ===")
+    jsonl_path = idir / f"{_L}_filtered.jsonl"
+    if not jsonl_path.exists():
+        print(f"[{_L}] SKIP: {jsonl_path.name} not found.")
+        continue
+    lang_vowels = VOWELS.get(_L, set("aeiouAEIOU"))
+
+    _feats_path_L = idir / f"{_L}_features.tsv"
+    _df_feats_L = pd.read_csv(_feats_path_L, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None) \
+                  if _feats_path_L.exists() else pd.DataFrame()
+    _uid2meta_L = {r["utterance_id"]: r for _, r in _df_feats_L.iterrows()} if not _df_feats_L.empty else {}
+
     if TEST_RUN:
         records = []
         with open(jsonl_path, encoding="utf-8") as _f:
@@ -402,25 +447,29 @@ else:
                 _line = _line.strip()
                 if _line:
                     records.append(json.loads(_line))
-        print(f"[TEST_RUN] Loaded {len(records):,} records (capped at {TEST_RUN_N:,}).")
+        print(f"[{_L}] TEST_RUN cap: loaded {len(records):,} records (max {TEST_RUN_N:,}).")
     else:
         records = load_jsonl(jsonl_path)
+        print(f"[{_L}] Loaded {len(records):,} filtered records.")
+
     # Filter to utterances that have speechrate in features and word timing
     has_words = [r for r in records if r.get("words_align")]
-    if not df_feats.empty:
-        sr_uids = set(df_feats.dropna(subset=["speechrate_wps"])["utterance_id"])
+    if not _df_feats_L.empty and "speechrate_wps" in _df_feats_L.columns:
+        sr_uids = set(_df_feats_L.dropna(subset=["speechrate_wps"])["utterance_id"])
         has_words = [r for r in has_words if r["utterance_id"] in sr_uids]
 
     sample_recs = rng.sample(has_words, min(N_EXAMPLES, len(has_words)))
+    print(f"[{_L}] Sampling {len(sample_recs)} transcript examples from {len(has_words):,} candidates")
 
-    for rec in sample_recs:
+    for _ex_i, rec in enumerate(sample_recs, 1):
         uid   = rec["utterance_id"]
         text  = rec.get("text", "")
         words = rec.get("words_align", [])
         pauses = rec.get("silent_pauses") or []
-        meta  = uid2meta.get(uid, {}) if not df_feats.empty else {}
-        sr    = meta.get("speechrate_wps", "?")
-        sent  = meta.get("sentiment_score", "?")
+        meta  = _uid2meta_L.get(uid, {}) if _uid2meta_L else {}
+        _fmt = lambda v, p=2: f"{v:.{p}f}" if isinstance(v, (int, float)) and v == v else "?"
+        sr    = meta.get("speechrate_wps")
+        sent  = meta.get("sentiment_score")
         n_paus = len(pauses)
 
         if not words:
@@ -460,12 +509,12 @@ else:
                       f"blue span=silent pause  ·  orange span=filled pause",
                       fontsize=7)
         ax.set_title(
-            f"{uid}  |  sent={sent:.2f}  sr={sr:.2f} wps  "
+            f"[{_L}] {uid}  |  sent={_fmt(sent)}  sr={_fmt(sr)} wps  "
             f"n_silent={n_paus}  n_filled={len(_filled)}",
             fontsize=9,
         )
         plt.tight_layout()
-        plt.show()
+        save_fig(f"cell03_timeline_{_L}_example{_ex_i:02d}_{uid[:60]}")
 
         # Transcript with vowels marked (uppercase vowels)
         marked = ""
@@ -532,7 +581,7 @@ for r, feat in enumerate(PLOT_FEATS):
         if r == n_f - 1: ax.set_xlabel("Sentiment", fontsize=8)
         ax.tick_params(labelsize=7)
 plt.tight_layout()
-plt.show()
+save_fig("cell04_trend_individual_panels")
 
 # (B) Overlay: one subplot per feature, all languages colored
 fig, axes = plt.subplots(1, n_f, figsize=(n_f * 5, 4))
@@ -553,7 +602,7 @@ for ax, feat in zip(axes, PLOT_FEATS):
     ax.set_ylabel("Normalised", fontsize=9)
     ax.legend(fontsize=8, loc="best")
 plt.tight_layout()
-plt.show()
+save_fig("cell04_trend_language_overlay")
 
 # %% [markdown]
 # ## Cell 5 — Praat vs OpenSMILE Comparison
@@ -562,98 +611,99 @@ plt.show()
 # Uses LLD NPZ if available (computes mean voiced F0), else scalar functionals TSV.
 
 # %%
-osm_path = idir / f"{LANG}_opensmile.tsv"
-lld_path = idir / f"{LANG}_opensmile_lld.npz"
+for _L in LANGS:
+  print(f"\n=== Cell 5 · {_L} · Praat vs OpenSMILE (LLD-mean) comparison ===")
+  osm_path = idir / f"{_L}_opensmile.tsv"
+  lld_path = idir / f"{_L}_opensmile_lld.npz"
+  _feats_path_L = idir / f"{_L}_features.tsv"
+  _df_feats_L = pd.read_csv(_feats_path_L, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None) \
+                if _feats_path_L.exists() else pd.DataFrame()
 
-if not osm_path.exists() and not lld_path.exists():
-    print(f"[SKIP] No OpenSMILE outputs found for {LANG}.")
-elif df_feats.empty:
-    print("[SKIP] Features TSV not loaded — run Setup cell first.")
-else:
-    comparison_pairs = []   # (praat_col, osm_col_or_lld_key, label)
+  if not osm_path.exists() and not lld_path.exists():
+    print(f"[{_L}] SKIP: No OpenSMILE outputs found.")
+    continue
+  if _df_feats_L.empty:
+    print(f"[{_L}] SKIP: Features TSV not available.")
+    continue
 
-    if lld_path.exists():
-        lld = np.load(lld_path, allow_pickle=True)
-        # Cache arrays (single decompression each; NpzFile re-loads on each access)
-        _lld_uids_all = lld["utterance_ids"]
-        _f0_lld       = lld["f0_lld"]
-        _loud_lld     = lld["loudness_lld"]
-        _f1_lld       = lld["f1_lld"]
-        _f2_lld       = lld["f2_lld"]
-        _f3_lld       = lld["f3_lld"]
+  if lld_path.exists():
+    lld = np.load(lld_path, allow_pickle=True)
+    _lld_uids_all = lld["utterance_ids"]
+    _f0_lld   = lld["f0_lld"]
+    _loud_lld = lld["loudness_lld"]
+    _f1_lld   = lld["f1_lld"]
+    _f2_lld   = lld["f2_lld"]
+    _f3_lld   = lld["f3_lld"]
 
-        lld_uids = list(_lld_uids_all)
-        if TEST_RUN:
-            lld_uids = lld_uids[:TEST_RUN_N]
-        uid2lld_idx = {uid: i for i, uid in enumerate(lld_uids)}
+    lld_uids = list(_lld_uids_all)
+    if TEST_RUN:
+        lld_uids = lld_uids[:TEST_RUN_N]
 
-        # Compute per-utterance mean (voiced frames only) for F0 and loudness
-        def mean_voiced(arr):
-            v = arr.astype(float)
-            v[v <= 0] = np.nan   # 0 = unvoiced sentinel in GeMAPSv01b
-            return np.nanmean(v) if np.any(~np.isnan(v)) else np.nan
+    def mean_voiced(arr):
+        v = arr.astype(float)
+        v[v <= 0] = np.nan
+        return np.nanmean(v) if np.any(~np.isnan(v)) else np.nan
 
-        f0_osm, loud_osm, f1_osm, f2_osm, f3_osm, uids_osm = [], [], [], [], [], []
-        for uid, f0_arr, loud_arr, f1_arr, f2_arr, f3_arr in zip(
-            lld_uids,
-            _f0_lld, _loud_lld, _f1_lld, _f2_lld, _f3_lld,
-        ):
-            f0_osm.append(mean_voiced(f0_arr))
-            loud_osm.append(float(np.nanmean(loud_arr.astype(float))))
-            f1_osm.append(mean_voiced(f1_arr))
-            f2_osm.append(mean_voiced(f2_arr))
-            f3_osm.append(mean_voiced(f3_arr))
-            uids_osm.append(uid)
+    f0_osm, loud_osm, f1_osm, f2_osm, f3_osm, uids_osm = [], [], [], [], [], []
+    for uid, f0_arr, loud_arr, f1_arr, f2_arr, f3_arr in zip(
+        lld_uids, _f0_lld, _loud_lld, _f1_lld, _f2_lld, _f3_lld,
+    ):
+        f0_osm.append(mean_voiced(f0_arr))
+        loud_osm.append(float(np.nanmean(loud_arr.astype(float))))
+        f1_osm.append(mean_voiced(f1_arr))
+        f2_osm.append(mean_voiced(f2_arr))
+        f3_osm.append(mean_voiced(f3_arr))
+        uids_osm.append(uid)
 
-        df_osm = pd.DataFrame({
-            "utterance_id": uids_osm,
-            "osm_f0": f0_osm, "osm_loudness": loud_osm,
-            "osm_f1": f1_osm, "osm_f2": f2_osm, "osm_f3": f3_osm,
-        })
-        df_merged = df_feats.merge(df_osm, on="utterance_id", how="inner")
+    df_osm = pd.DataFrame({
+        "utterance_id": uids_osm,
+        "osm_f0": f0_osm, "osm_loudness": loud_osm,
+        "osm_f1": f1_osm, "osm_f2": f2_osm, "osm_f3": f3_osm,
+    })
+    df_merged = _df_feats_L.merge(df_osm, on="utterance_id", how="inner")
 
-        pairs = [
-            ("f0_raw",        "osm_f0",      "F0 raw vs OSM F0 (LLD mean voiced, log-semitones)"),
-            ("intensity_norm","osm_loudness", "Intensity norm vs OSM Loudness (LLD mean)"),
-            ("f1_median",     "osm_f1",       "F1 median vs OSM F1 (LLD mean voiced)"),
-            ("f2_median",     "osm_f2",       "F2 median vs OSM F2 (LLD mean voiced)"),
-            ("f3_median",     "osm_f3",       "F3 median vs OSM F3 (LLD mean voiced)"),
-        ]
-    else:
-        df_osm = pd.read_csv(osm_path, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
-        df_merged = df_feats.merge(df_osm, on="utterance_id", how="inner")
-        # Map approximate functional column names
-        pairs = [
-            ("f0_raw", "osmile_F0semitoneFrom27.5Hz_sma3nz_amean",
-             "F0 raw vs OSM F0 (functional mean)"),
-            ("intensity_norm", "osmile_Loudness_sma3_amean",
-             "Intensity norm vs OSM Loudness (functional mean)"),
-        ]
+    pairs = [
+        ("f0_raw",        "osm_f0",      "F0 raw vs OSM F0 (LLD mean voiced, log-semitones)"),
+        ("intensity_norm","osm_loudness", "Intensity norm vs OSM Loudness (LLD mean)"),
+        ("f1_median",     "osm_f1",       "F1 median vs OSM F1 (LLD mean voiced)"),
+        ("f2_median",     "osm_f2",       "F2 median vs OSM F2 (LLD mean voiced)"),
+        ("f3_median",     "osm_f3",       "F3 median vs OSM F3 (LLD mean voiced)"),
+    ]
+  else:
+    df_osm = pd.read_csv(osm_path, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+    df_merged = _df_feats_L.merge(df_osm, on="utterance_id", how="inner")
+    pairs = [
+        ("f0_raw", "osmile_F0semitoneFrom27.5Hz_sma3nz_amean",
+         "F0 raw vs OSM F0 (functional mean)"),
+        ("intensity_norm", "osmile_Loudness_sma3_amean",
+         "Intensity norm vs OSM Loudness (functional mean)"),
+    ]
 
-    valid_pairs = [(a, b, lbl) for a, b, lbl in pairs
-                   if a in df_merged.columns and b in df_merged.columns]
-    if not valid_pairs:
-        print("[WARN] No matching column pairs found for comparison.")
-    else:
-        fig, axes = plt.subplots(1, len(valid_pairs), figsize=(len(valid_pairs) * 4, 4))
-        if len(valid_pairs) == 1: axes = [axes]
-        fig.suptitle(f"{LANG} — Praat vs OpenSMILE Feature Comparison", fontsize=11)
+  valid_pairs = [(a, b, lbl) for a, b, lbl in pairs
+                 if a in df_merged.columns and b in df_merged.columns]
+  if not valid_pairs:
+    print(f"[{_L}] No matching column pairs found for comparison.")
+    continue
 
-        for ax, (praat_col, osm_col, label) in zip(axes, valid_pairs):
-            sub = df_merged[[praat_col, osm_col]].dropna()
-            if len(sub) < 10:
-                ax.set_title(f"{label}\n(n<10)")
-                continue
-            r, p = stats.spearmanr(sub[praat_col], sub[osm_col])
-            ax.scatter(sub[praat_col], sub[osm_col],
-                       alpha=0.15, s=8, color=PALETTE.get(LANG, "#888"))
-            ax.set_xlabel(f"Praat: {praat_col}", fontsize=8)
-            ax.set_ylabel(f"OSM: {osm_col.split('_')[-1]}", fontsize=8)
-            ax.set_title(f"{label}\nSpearman r={r:.3f}, p={p:.3e}", fontsize=8)
-            ax.tick_params(labelsize=7)
+  fig, axes = plt.subplots(1, len(valid_pairs), figsize=(len(valid_pairs) * 4, 4))
+  if len(valid_pairs) == 1: axes = [axes]
+  fig.suptitle(f"{_L} — Praat vs OpenSMILE Feature Comparison", fontsize=11)
 
-        plt.tight_layout()
-        plt.show()
+  for ax, (praat_col, osm_col, label) in zip(axes, valid_pairs):
+    sub = df_merged[[praat_col, osm_col]].dropna()
+    if len(sub) < 10:
+        ax.set_title(f"{label}\n(n<10)"); continue
+    r, p = stats.spearmanr(sub[praat_col], sub[osm_col])
+    ax.scatter(sub[praat_col], sub[osm_col],
+               alpha=0.15, s=8, color=PALETTE.get(_L, "#888"))
+    ax.set_xlabel(f"Praat: {praat_col}", fontsize=8)
+    ax.set_ylabel(f"OSM: {osm_col.split('_')[-1]}", fontsize=8)
+    ax.set_title(f"{label}\nSpearman r={r:.3f}, p={p:.3e}", fontsize=8)
+    ax.tick_params(labelsize=7)
+    logprint(f"  [{_L}] {label}", f"ρ={r:+.4f} p={p:.3e} n={len(sub):,}")
+
+  plt.tight_layout()
+  save_fig(f"cell05_praat_vs_opensmile_{_L}")
 
 # %% [markdown]
 # ## Cell 6 — Per-Language Investigator / SI Anomaly Check
@@ -736,7 +786,7 @@ for ax, feat in zip(axes, INV_FEATS):
     ax.legend(fontsize=8, loc="best")
 
 plt.tight_layout()
-plt.show()
+save_fig("cell06_si_anomaly_overlay")
 
 # %% [markdown]
 # ## Cell 6b — Global Trend: Per-language + Equal-Language vs Weighted-Speaker
@@ -797,7 +847,7 @@ elif SPLIT_BY_GENDER:
             if col_i == 0: ax.set_ylabel(f"{_g.upper()}: {feat}", fontsize=8)
             ax.legend(fontsize=6, loc="best", ncol=2)
     plt.tight_layout()
-    plt.show()
+    save_fig("cell06b_global_trend_by_gender")
 else:
     _GT_FEATS = INV_FEATS  # same feature set as the SI-anomaly cell
     _x_gt = 0.5 * (np.linspace(0, 5, N_BINS + 1)[:-1] + np.linspace(0, 5, N_BINS + 1)[1:])
@@ -845,7 +895,7 @@ else:
         ax.legend(fontsize=7, loc="best", ncol=2)
 
     plt.tight_layout()
-    plt.show()
+    save_fig("cell06b_global_trend_pooled")
 
     # Quick numeric summary — divergence between the two weightings
     print("\nEqual-language vs weighted-speaker divergence (mean |Δ| across bins):")
@@ -876,81 +926,78 @@ else:
 # %%
 from scipy.stats import pearsonr, spearmanr as _spearmanr
 
-_praat_tsv   = idir / f"{LANG}_praat.tsv"
-_osmile_tsv  = idir / f"{LANG}_opensmile.tsv"
+for _L in LANGS:
+  print(f"\n=== Cell 7 · {_L} · Praat vs OpenSMILE correlation table ===")
+  _praat_tsv   = idir / f"{_L}_praat.tsv"
+  _osmile_tsv  = idir / f"{_L}_opensmile.tsv"
 
-if not _praat_tsv.exists() or not _osmile_tsv.exists():
-    print(f"Missing TSVs for {LANG}: need {_praat_tsv.name} and {_osmile_tsv.name}")
-else:
-    _praat_df  = pd.read_csv(_praat_tsv,  sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
-    _osmile_df = pd.read_csv(_osmile_tsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
-    _merged    = _praat_df.merge(_osmile_df, on="utterance_id", how="inner")
-    print(f"[{LANG}] Merged rows: {len(_merged):,}  "
-          f"(praat={len(_praat_df):,}, osmile={len(_osmile_df):,})")
+  if not _praat_tsv.exists() or not _osmile_tsv.exists():
+    print(f"[{_L}] MISSING TSVs: need {_praat_tsv.name} and {_osmile_tsv.name}"); continue
 
-    def find_osm_col(keywords: list[str], df: pd.DataFrame) -> str | None:
-        cols = df.columns.tolist()
-        for kw in keywords:
-            hits = [c for c in cols if kw.lower() in c.lower()]
-            if hits:
-                return hits[0]
-        return None
+  _praat_df  = pd.read_csv(_praat_tsv,  sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+  _osmile_df = pd.read_csv(_osmile_tsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+  _merged    = _praat_df.merge(_osmile_df, on="utterance_id", how="inner")
+  print(f"[{_L}] Merged rows: {len(_merged):,}  "
+        f"(praat={len(_praat_df):,}, osmile={len(_osmile_df):,})")
 
-    _PAIRS = [
-        ("f0_raw",         find_osm_col(["F0semitone", "F0semi"], _osmile_df), "F0 (Hz vs semitone)"),
-        ("intensity_raw",  find_osm_col(["Loudness_sma3", "loudness"], _osmile_df), "Intensity / Loudness"),
-        ("f1_median",      find_osm_col(["F1frequency"], _osmile_df), "F1 frequency"),
-        ("f2_median",      find_osm_col(["F2frequency"], _osmile_df), "F2 frequency"),
-        ("f3_median",      find_osm_col(["F3frequency"], _osmile_df), "F3 frequency"),
-        ("hnr_utt",        find_osm_col(["HNRdBACF", "HNR"], _osmile_df), "HNR"),
-        ("jitter_local",   find_osm_col(["jitterLocal", "jitter"], _osmile_df), "Jitter"),
-        ("shimmer_local",  find_osm_col(["shimmerLocal", "shimmer"], _osmile_df), "Shimmer"),
-    ]
+  def find_osm_col(keywords: list[str], df: pd.DataFrame) -> str | None:
+    cols = df.columns.tolist()
+    for kw in keywords:
+      hits = [c for c in cols if kw.lower() in c.lower()]
+      if hits: return hits[0]
+    return None
 
-    rows_tab = []
-    for praat_col, osm_col, label in _PAIRS:
-        if praat_col not in _merged.columns or osm_col is None or osm_col not in _merged.columns:
-            rows_tab.append({"Feature": label, "Praat": praat_col,
-                             "OpenSMILE": str(osm_col), "Pearson r": None,
-                             "Spearman r": None, "n": None})
-            continue
-        sub = _merged[[praat_col, osm_col]].dropna()
-        if len(sub) < 10:
-            rows_tab.append({"Feature": label, "Praat": praat_col,
-                             "OpenSMILE": osm_col, "Pearson r": None,
-                             "Spearman r": None, "n": len(sub)})
-            continue
-        pr, _ = pearsonr(sub[praat_col], sub[osm_col])
-        sr, _ = _spearmanr(sub[praat_col], sub[osm_col])
-        rows_tab.append({"Feature": label, "Praat": praat_col,
-                         "OpenSMILE": osm_col,
-                         "Pearson r": round(pr, 3), "Spearman r": round(sr, 3),
-                         "n": len(sub)})
+  _PAIRS = [
+    ("f0_raw",         find_osm_col(["F0semitone", "F0semi"], _osmile_df), "F0 (Hz vs semitone)"),
+    ("intensity_raw",  find_osm_col(["Loudness_sma3", "loudness"], _osmile_df), "Intensity / Loudness"),
+    ("f1_median",      find_osm_col(["F1frequency"], _osmile_df), "F1 frequency"),
+    ("f2_median",      find_osm_col(["F2frequency"], _osmile_df), "F2 frequency"),
+    ("f3_median",      find_osm_col(["F3frequency"], _osmile_df), "F3 frequency"),
+    ("hnr_utt",        find_osm_col(["HNRdBACF", "HNR"], _osmile_df), "HNR"),
+    ("jitter_local",   find_osm_col(["jitterLocal", "jitter"], _osmile_df), "Jitter"),
+    ("shimmer_local",  find_osm_col(["shimmerLocal", "shimmer"], _osmile_df), "Shimmer"),
+  ]
 
-    _tab_df = pd.DataFrame(rows_tab)
-    print("\nPraat vs OpenSMILE correlation table:")
-    print(_tab_df.to_string(index=False))
+  rows_tab = []
+  for praat_col, osm_col, label in _PAIRS:
+    if praat_col not in _merged.columns or osm_col is None or osm_col not in _merged.columns:
+      rows_tab.append({"Feature": label, "Praat": praat_col,
+                       "OpenSMILE": str(osm_col), "Pearson r": None,
+                       "Spearman r": None, "n": None}); continue
+    sub = _merged[[praat_col, osm_col]].dropna()
+    if len(sub) < 10:
+      rows_tab.append({"Feature": label, "Praat": praat_col,
+                       "OpenSMILE": osm_col, "Pearson r": None,
+                       "Spearman r": None, "n": len(sub)}); continue
+    pr, _ = pearsonr(sub[praat_col], sub[osm_col])
+    sr, _ = _spearmanr(sub[praat_col], sub[osm_col])
+    rows_tab.append({"Feature": label, "Praat": praat_col,
+                     "OpenSMILE": osm_col,
+                     "Pearson r": round(pr, 3), "Spearman r": round(sr, 3),
+                     "n": len(sub)})
 
-    # Heatmap (Spearman r)
-    _valid = _tab_df.dropna(subset=["Spearman r"])
-    if not _valid.empty:
-        # Wide, short strip: one column per feature pair
-        fig, ax = plt.subplots(figsize=(max(6, len(_valid) * 1.1 + 2), 2.4))
-        _mat = _valid[["Spearman r"]].values.T.astype(float)
-        im = ax.imshow(_mat, cmap="RdYlGn", vmin=-1, vmax=1, aspect="auto")
-        ax.set_xticks(range(len(_valid)))
-        ax.set_xticklabels(_valid["Feature"].tolist(), rotation=25, ha="right", fontsize=9)
-        ax.set_yticks([0])
-        ax.set_yticklabels(["Spearman r"], fontsize=9)
-        for j, val in enumerate(_mat[0]):
-            ax.text(j, 0, f"{val:.2f}", ha="center", va="center", fontsize=9,
-                    color="black" if abs(val) < 0.7 else "white")
-        plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
-        ax.set_title(f"Praat vs OpenSMILE — {LANG}", fontsize=11)
-        plt.tight_layout()
-        plt.show()
-    else:
-        print("No valid pairs to plot.")
+  _tab_df = pd.DataFrame(rows_tab)
+  print(f"\n[{_L}] Praat vs OpenSMILE correlation table:")
+  print(_tab_df.to_string(index=False))
+
+  # Heatmap (Spearman r)
+  _valid = _tab_df.dropna(subset=["Spearman r"])
+  if _valid.empty:
+    print(f"[{_L}] No valid pairs to plot."); continue
+
+  fig, ax = plt.subplots(figsize=(max(6, len(_valid) * 1.1 + 2), 2.4))
+  _mat = _valid[["Spearman r"]].values.T.astype(float)
+  im = ax.imshow(_mat, cmap="RdYlGn", vmin=-1, vmax=1, aspect="auto")
+  ax.set_xticks(range(len(_valid)))
+  ax.set_xticklabels(_valid["Feature"].tolist(), rotation=25, ha="right", fontsize=9)
+  ax.set_yticks([0]); ax.set_yticklabels(["Spearman r"], fontsize=9)
+  for j, val in enumerate(_mat[0]):
+    ax.text(j, 0, f"{val:.2f}", ha="center", va="center", fontsize=9,
+            color="black" if abs(val) < 0.7 else "white")
+  plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+  ax.set_title(f"Praat vs OpenSMILE — {_L}", fontsize=11)
+  plt.tight_layout()
+  save_fig(f"cell07_praat_vs_opensmile_heatmap_{_L}")
 
 # %% [markdown]
 # ## Cell 8 — Sentiment vs VAD: Binned Mean + Median, Spearman r
@@ -959,72 +1006,118 @@ else:
 # Shows 3-panel plot (valence, arousal, dominance) with both curves + linear fit.
 
 # %%
-_vad_tsv = idir / f"{LANG}_vad.tsv"
+_SENT_MIN, _SENT_MAX = 0.0, 5.0
+_bins = np.linspace(_SENT_MIN, _SENT_MAX, N_BINS + 1)
+_bin_centres = 0.5 * (_bins[:-1] + _bins[1:])
+_vad_dims = ["valence", "arousal", "dominance"]
+_all_vad_dfs = []   # collected per-lang for the global merged view
 
-if not _vad_tsv.exists():
-    print(f"Missing {_vad_tsv}. Run 35_vad.py first.")
-else:
-    _vad_df = pd.read_csv(_vad_tsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
-    print(f"[{LANG}] VAD rows: {len(_vad_df):,},  "
-          f"coverage: {_vad_df['valence'].notna().sum():,} utterances with ≥1 lemma matched")
+# ── PER-LANGUAGE ───────────────────────────────────────────────────────────
+for _L in LANGS:
+  print(f"\n=== Cell 8 · {_L} · Sentiment × VAD ===")
+  _vad_tsv = idir / f"{_L}_vad.tsv"
+  if not _vad_tsv.exists():
+    print(f"[{_L}] MISSING {_vad_tsv.name}. Run 35_vad.py first."); continue
 
-    _SENT_MIN, _SENT_MAX = 0.0, 5.0
-    _bins = np.linspace(_SENT_MIN, _SENT_MAX, N_BINS + 1)
-    _bin_centres = 0.5 * (_bins[:-1] + _bins[1:])
-    _vad_df["_bin"] = pd.cut(_vad_df["sentiment_score"], bins=_bins, labels=False,
-                              include_lowest=True)
+  _vad_df = pd.read_csv(_vad_tsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+  _vad_df["_lang"] = _L
+  _all_vad_dfs.append(_vad_df)
+  print(f"[{_L}] VAD rows: {len(_vad_df):,},  "
+        f"coverage: {_vad_df['valence'].notna().sum():,} utterances with ≥1 lemma matched "
+        f"({100*_vad_df['valence'].notna().sum()/len(_vad_df):.1f}%)")
 
-    _vad_dims = ["valence", "arousal", "dominance"]
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=False)
+  _vad_df["_bin"] = pd.cut(_vad_df["sentiment_score"], bins=_bins, labels=False, include_lowest=True)
 
-    for ax, dim in zip(axes, _vad_dims):
-        sub = _vad_df.dropna(subset=["sentiment_score", dim])
-        if len(sub) < 10:
-            ax.set_title(f"{dim} — insufficient data")
-            continue
+  fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=False)
+  for ax, dim in zip(axes, _vad_dims):
+    sub = _vad_df.dropna(subset=["sentiment_score", dim])
+    if len(sub) < 10:
+      ax.set_title(f"{dim} — insufficient data"); continue
+    sr, sp = _spearmanr(sub["sentiment_score"], sub[dim])
+    _grouped = sub.groupby("_bin")[dim]
+    _means   = _grouped.mean().reindex(range(N_BINS))
+    _medians = _grouped.median().reindex(range(N_BINS))
+    _counts  = _grouped.count().reindex(range(N_BINS), fill_value=0)
+    _ok = _counts >= 3
+    ax.plot(_bin_centres[_ok], _means[_ok].values, "o-", ms=4, lw=1.5, color="#2196F3", label="bin mean")
+    ax.plot(_bin_centres[_ok], _medians[_ok].values, "s--", ms=4, lw=1.5, color="#FF9800", label="bin median")
+    _x_fit = _bin_centres[_ok]; _y_fit = _means[_ok].values
+    if len(_x_fit) >= 3:
+      _m, _b = np.polyfit(_x_fit, _y_fit, 1)
+      ax.plot(_x_fit, _m * _x_fit + _b, "k:", lw=1.2, label=f"slope={_m:.3f}")
+      logprint(f"[{_L}] linear-fit slope · {dim}", f"{_m:+.4f} (intercept {_b:+.4f})", indent=1)
+    ax.set_title(f"{dim}\nSpearman r={sr:.3f}, p={sp:.3e}, n={len(sub):,}", fontsize=10)
+    ax.set_xlabel("Sentiment score", fontsize=9)
+    ax.set_ylabel(dim.capitalize(), fontsize=9)
+    ax.legend(fontsize=8)
+    logprint(f"[{_L}] Spearman sentiment × {dim}", f"ρ={sr:+.4f} p={sp:.3e} n={len(sub):,}", indent=1)
 
-        sr, sp = _spearmanr(sub["sentiment_score"], sub[dim])
-        _grouped = sub.groupby("_bin")[dim]
-        _means   = _grouped.mean().reindex(range(N_BINS))
-        _medians = _grouped.median().reindex(range(N_BINS))
-        _counts  = _grouped.count().reindex(range(N_BINS), fill_value=0)
-        _ok = _counts >= 3
+  plt.suptitle(f"Sentiment vs VAD — {_L}", fontsize=12, y=1.01)
+  plt.tight_layout()
+  save_fig(f"cell08_sentiment_vs_vad_{_L}")
 
-        ax.plot(_bin_centres[_ok], _means[_ok].values,   "o-", ms=4, lw=1.5,
-                color="#2196F3", label="bin mean")
-        ax.plot(_bin_centres[_ok], _medians[_ok].values, "s--", ms=4, lw=1.5,
-                color="#FF9800", label="bin median")
+  # Mean-median agreement table (per lang)
+  print(f"[{_L}] Bin mean vs median agreement:")
+  _agree_rows = []
+  for dim in _vad_dims:
+    sub = _vad_df.dropna(subset=["sentiment_score", dim])
+    _g = sub.groupby("_bin")[dim]
+    _diff = (_g.mean().reindex(range(N_BINS)) - _g.median().reindex(range(N_BINS))).abs()
+    _agree_rows.append({"dim": dim,
+                        "mean |mean-median|": round(_diff.mean(), 4),
+                        "max |mean-median|":  round(_diff.max(), 4)})
+  print(pd.DataFrame(_agree_rows).to_string(index=False))
 
-        # Linear fit on means
-        _x_fit = _bin_centres[_ok]
-        _y_fit = _means[_ok].values
-        if len(_x_fit) >= 3:
-            _m, _b = np.polyfit(_x_fit, _y_fit, 1)
-            ax.plot(_x_fit, _m * _x_fit + _b, "k:", lw=1.2, label=f"linear fit (slope={_m:.3f})")
+# ── GLOBAL: MERGED ACROSS LANGUAGES ────────────────────────────────────────
+if len(_all_vad_dfs) >= 2:
+  print(f"\n=== Cell 8 · GLOBAL (all {len(_all_vad_dfs)} langs merged) · Sentiment × VAD ===")
+  _vad_g = pd.concat(_all_vad_dfs, ignore_index=True)
+  _vad_g["_bin"] = pd.cut(_vad_g["sentiment_score"], bins=_bins, labels=False, include_lowest=True)
+  print(f"[GLOBAL] Total VAD rows: {len(_vad_g):,} across {_vad_g['_lang'].nunique()} langs")
 
-        ax.set_title(f"{dim}\nSpearman r={sr:.3f}, p={sp:.4f}, n={len(sub):,}", fontsize=10)
-        ax.set_xlabel("Sentiment score", fontsize=9)
-        ax.set_ylabel(dim.capitalize(), fontsize=9)
-        ax.legend(fontsize=8)
+  fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=False)
+  for ax, dim in zip(axes, _vad_dims):
+    sub = _vad_g.dropna(subset=["sentiment_score", dim])
+    if len(sub) < 10:
+      ax.set_title(f"{dim} — insufficient data"); continue
+    sr, sp = _spearmanr(sub["sentiment_score"], sub[dim])
+    logprint(f"[GLOBAL] Spearman sentiment × {dim}", f"ρ={sr:+.4f} p={sp:.3e} n={len(sub):,}", indent=1)
+    _grouped = sub.groupby("_bin")[dim]
+    _means   = _grouped.mean().reindex(range(N_BINS))
+    _counts  = _grouped.count().reindex(range(N_BINS), fill_value=0)
+    _ok = _counts >= 3
+    ax.plot(_bin_centres[_ok], _means[_ok].values, "-", lw=3.0, color="#FFA500")
+    _x_fit = _bin_centres[_ok]; _y_fit = _means[_ok].values
+    if len(_x_fit) >= 3:
+      _m, _b = np.polyfit(_x_fit, _y_fit, 1)
+      ax.plot(_x_fit, _m * _x_fit + _b, "k:", lw=1.2, label=f"slope={_m:.3f}")
+      logprint(f"[GLOBAL] linear-fit slope · {dim}", f"{_m:+.4f} (intercept {_b:+.4f})", indent=1)
+    ax.set_title(f"{dim} (GLOBAL)\nSpearman r={sr:.3f}, p={sp:.3e}, n={len(sub):,}", fontsize=10)
+    ax.set_xlabel("Sentiment score", fontsize=9)
+    ax.set_ylabel(dim.capitalize(), fontsize=9)
+    ax.legend(fontsize=8)
 
-    plt.suptitle(f"Sentiment vs VAD — {LANG}", fontsize=12, y=1.01)
-    plt.tight_layout()
-    plt.show()
+  plt.suptitle(f"Sentiment vs VAD — GLOBAL (all langs merged)", fontsize=12, y=1.01)
+  plt.tight_layout()
+  save_fig("cell08_sentiment_vs_vad_GLOBAL")
 
-    # Mean-median agreement table
-    print("\nBin mean vs median agreement (sampled at 10 evenly-spaced bins):")
-    _sample_bins = np.linspace(0, N_BINS - 1, 10, dtype=int)
-    _agree_rows = []
-    for dim in _vad_dims:
-        sub = _vad_df.dropna(subset=["sentiment_score", dim])
-        _grouped = sub.groupby("_bin")[dim]
-        _means_s   = _grouped.mean().reindex(range(N_BINS))
-        _medians_s = _grouped.median().reindex(range(N_BINS))
-        _diff      = (_means_s - _medians_s).abs()
-        _agree_rows.append({"dim": dim,
-                             "mean |mean-median|": round(_diff.mean(), 4),
-                             "max |mean-median|":  round(_diff.max(), 4)})
-    print(pd.DataFrame(_agree_rows).to_string(index=False))
+  # Per-language + global summary table
+  print(f"\n[GLOBAL vs per-lang] Sentiment × VAD Spearman ρ table:")
+  _rho_rows = []
+  for dim in _vad_dims:
+    _row = {"dim": dim}
+    for _L in LANGS:
+      _sub_L = _vad_g[(_vad_g["_lang"] == _L)].dropna(subset=["sentiment_score", dim])
+      if len(_sub_L) >= 3:
+        _r, _p = _spearmanr(_sub_L["sentiment_score"], _sub_L[dim])
+        _row[_L] = f"{_r:+.3f} (n={len(_sub_L):,})"
+      else:
+        _row[_L] = "n<3"
+    _sub_g = _vad_g.dropna(subset=["sentiment_score", dim])
+    _r, _p = _spearmanr(_sub_g["sentiment_score"], _sub_g[dim])
+    _row["GLOBAL"] = f"{_r:+.3f} (n={len(_sub_g):,})"
+    _rho_rows.append(_row)
+  print(pd.DataFrame(_rho_rows).to_string(index=False))
 
 # %% [markdown]
 # ## Cell 9 — CAP Topic Correlation
@@ -1208,7 +1301,7 @@ else:
                 _ax.tick_params(axis="y", labelsize=7)
             plt.suptitle(f"Feature means by CAP topic — {LANG}", fontsize=12)
             plt.tight_layout()
-            plt.show()
+            save_fig(f"cell09_topic_means_{LANG}")
 
     # --- Global z-score normalised view ---
     print("\n--- Global z-score normalised means by topic ---")
@@ -1247,6 +1340,6 @@ else:
             plt.colorbar(im2, ax=ax, shrink=0.6, label="z-score")
             ax.set_title("Global z-score normalised feature means by CAP topic", fontsize=11)
             plt.tight_layout()
-            plt.show()
+            save_fig("cell09_topic_global_zscore")
     else:
         print("No global rows — check topic field coverage.")
