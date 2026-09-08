@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  50_explore.py  (Jupyter-compatible notebook)
 # Release: 1.0
-# Version: v1.02
+# Version: v1.03
 # Purpose: Debug and exploration for ParlaSpeech sentiment-acoustics.
 #          Envelope viewer, speechrate+transcript, general replotters,
 #          Praat vs OpenSMILE comparison, per-language anomaly inspector.
@@ -11,8 +11,11 @@
 #          Convert: jupytext --to notebook 5_debug/50_explore.py --output 5_debug/50_explore.ipynb
 #          Run from: JP1_parlaspeech-sentiment-acoustics/ directory (kernel CWD irrelevant — paths are absolute)
 #
+# v1.03: TEST_RUN cap now covers every cell — added to Cell 2 (praat NPZ uids),
+#        Cell 2b (VAD NPZ uids + VAD TSV), Cell 5 (LLD NPZ uids + osmile TSV),
+#        Cell 7 (praat/osmile TSVs), VAD-corr cell, and topic-ANOVA cell.
 # v1.02: idir/rdir now absolute (_repo_root-anchored) — no more kernel CWD dependency.
-#        TEST_RUN=True caps all loads to TEST_RUN_N=1000 (JSONL: early-stop; TSV: nrows=).
+#        TEST_RUN=True initial impl (Setup, Cell 3, Cell 4, Cell 6 only).
 #        Fixed VOWELS in Cell 3 (removed consonants HR/RS/SI). Version v1.01 skipped.
 # v1.00: Initial notebook.
 # ============================================================
@@ -99,6 +102,8 @@ if not npz_path.exists():
 else:
     data = np.load(npz_path, allow_pickle=True)
     uids = list(data["utterance_ids"])
+    if TEST_RUN:
+        uids = uids[:TEST_RUN_N]
     uid2idx = {uid: i for i, uid in enumerate(uids)}
 
     # Build a lookup from features TSV
@@ -190,10 +195,12 @@ if not vad_npz_path.exists():
 else:
     vdata = np.load(vad_npz_path, allow_pickle=True)
     vad_uids = list(vdata["utterance_ids"])
+    if TEST_RUN:
+        vad_uids = vad_uids[:TEST_RUN_N]
     vuid2idx = {uid: i for i, uid in enumerate(vad_uids)}
 
     # Load utterance-level VAD scores for metadata
-    df_vad = pd.read_csv(vad_tsv_path, sep="\t") if vad_tsv_path.exists() else pd.DataFrame()
+    df_vad = pd.read_csv(vad_tsv_path, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None) if vad_tsv_path.exists() else pd.DataFrame()
     uid2vad = {}
     if not df_vad.empty:
         for _, row in df_vad.iterrows():
@@ -449,6 +456,8 @@ else:
     if lld_path.exists():
         lld = np.load(lld_path, allow_pickle=True)
         lld_uids = list(lld["utterance_ids"])
+        if TEST_RUN:
+            lld_uids = lld_uids[:TEST_RUN_N]
         uid2lld_idx = {uid: i for i, uid in enumerate(lld_uids)}
 
         # Compute per-utterance mean (voiced frames only) for F0 and loudness
@@ -485,7 +494,7 @@ else:
             ("f3_median",     "osm_f3",       "F3 median vs OSM F3 (LLD mean voiced)"),
         ]
     else:
-        df_osm = pd.read_csv(osm_path, sep="\t")
+        df_osm = pd.read_csv(osm_path, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
         df_merged = df_feats.merge(df_osm, on="utterance_id", how="inner")
         # Map approximate functional column names
         pairs = [
@@ -618,8 +627,8 @@ _osmile_tsv  = idir / f"{LANG}_opensmile.tsv"
 if not _praat_tsv.exists() or not _osmile_tsv.exists():
     print(f"Missing TSVs for {LANG}: need {_praat_tsv.name} and {_osmile_tsv.name}")
 else:
-    _praat_df  = pd.read_csv(_praat_tsv,  sep="\t")
-    _osmile_df = pd.read_csv(_osmile_tsv, sep="\t")
+    _praat_df  = pd.read_csv(_praat_tsv,  sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+    _osmile_df = pd.read_csv(_osmile_tsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
     _merged    = _praat_df.merge(_osmile_df, on="utterance_id", how="inner")
     print(f"[{LANG}] Merged rows: {len(_merged):,}  "
           f"(praat={len(_praat_df):,}, osmile={len(_osmile_df):,})")
@@ -699,7 +708,7 @@ _vad_tsv = idir / f"{LANG}_vad.tsv"
 if not _vad_tsv.exists():
     print(f"Missing {_vad_tsv}. Run 35_vad.py first.")
 else:
-    _vad_df = pd.read_csv(_vad_tsv, sep="\t")
+    _vad_df = pd.read_csv(_vad_tsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
     print(f"[{LANG}] VAD rows: {len(_vad_df):,},  "
           f"coverage: {_vad_df['valence'].notna().sum():,} utterances with ≥1 lemma matched")
 
@@ -861,11 +870,18 @@ else:
             print(f"[{_lang}] Missing files, skipping.")
             continue
 
-        _filt_recs  = [json.loads(l) for l in open(_filt_jsn) if l.strip()]
+        if TEST_RUN:
+            _filt_recs = []
+            with open(_filt_jsn) as _fjs:
+                for _l in _fjs:
+                    if len(_filt_recs) >= TEST_RUN_N: break
+                    if _l.strip(): _filt_recs.append(json.loads(_l))
+        else:
+            _filt_recs = [json.loads(l) for l in open(_filt_jsn) if l.strip()]
         _target_ids = {r["utterance_id"] for r in _filt_recs}
         _topic_map  = _load_topic_map(_v4_path, _target_ids, _topic_field)
 
-        _feat_df = pd.read_csv(_feat_tsv, sep="\t")
+        _feat_df = pd.read_csv(_feat_tsv, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
         _feat_df["_topic"] = _feat_df["utterance_id"].map(_topic_map)
         _feat_df = _feat_df.dropna(subset=["_topic"])
 
