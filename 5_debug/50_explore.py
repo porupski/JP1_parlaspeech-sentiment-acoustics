@@ -2,7 +2,7 @@
 # ============================================================
 # Script:  50_explore.py  (Jupyter-compatible notebook)
 # Release: 1.0
-# Version: v1.03
+# Version: v1.04
 # Purpose: Debug and exploration for ParlaSpeech sentiment-acoustics.
 #          Envelope viewer, speechrate+transcript, general replotters,
 #          Praat vs OpenSMILE comparison, per-language anomaly inspector.
@@ -11,6 +11,10 @@
 #          Convert: jupytext --to notebook 5_debug/50_explore.py --output 5_debug/50_explore.ipynb
 #          Run from: JP1_parlaspeech-sentiment-acoustics/ directory (kernel CWD irrelevant — paths are absolute)
 #
+# v1.04: Fix Cell 2/2b/5 hang — cache NpzFile arrays into locals. NpzFile.__getitem__
+#        re-decompresses+unpickles the whole array per call; `data[key]` inside a loop
+#        was doing N full disk-to-memory hits. Fix Cell 7 heatmap geometry (was tall/narrow).
+#        Fix Cell 9 NameError (__JSONL_DIR → _JSONL_DIR).
 # v1.03: TEST_RUN cap now covers every cell — added to Cell 2 (praat NPZ uids),
 #        Cell 2b (VAD NPZ uids + VAD TSV), Cell 5 (LLD NPZ uids + osmile TSV),
 #        Cell 7 (praat/osmile TSVs), VAD-corr cell, and topic-ANOVA cell.
@@ -101,7 +105,21 @@ if not npz_path.exists():
     print(f"[SKIP] {npz_path} not found. Run 20_extract_praat.py first.")
 else:
     data = np.load(npz_path, allow_pickle=True)
-    uids = list(data["utterance_ids"])
+    # CRITICAL: cache arrays. NpzFile.__getitem__ decompresses + unpickles the
+    # ENTIRE object array on every call. Any `data[key]` inside a loop is a
+    # full disk-to-memory hit per iteration.
+    _uids_all       = data["utterance_ids"]
+    _f0_times       = data["f0_times"]
+    _f0_values      = data["f0_values"]
+    _int_times      = data["intensity_times"]
+    _int_values     = data["intensity_values"]
+    _word_starts    = data["word_starts"]
+    _word_ends      = data["word_ends"]
+    _f1_word_median = data["f1_word_median"]
+    _f2_word_median = data["f2_word_median"]
+    _f3_word_median = data["f3_word_median"]
+
+    uids = list(_uids_all)
     if TEST_RUN:
         uids = uids[:TEST_RUN_N]
     uid2idx = {uid: i for i, uid in enumerate(uids)}
@@ -113,20 +131,20 @@ else:
             uid2meta[row["utterance_id"]] = row
 
     # Sample N utterances that have F0 data
-    candidates = [uid for uid in uids if data["f0_values"][uid2idx[uid]].size > 0]
+    candidates = [uid for uid in uids if _f0_values[uid2idx[uid]].size > 0]
     sample_uids = rng.sample(candidates, min(N_EXAMPLES, len(candidates)))
 
     for uid in sample_uids:
         i = uid2idx[uid]
-        f0_t  = data["f0_times"][i].astype(float)
-        f0_v  = data["f0_values"][i].astype(float)
-        int_t = data["intensity_times"][i].astype(float)
-        int_v = data["intensity_values"][i].astype(float)
-        w_s   = data["word_starts"][i].astype(float)
-        w_e   = data["word_ends"][i].astype(float)
-        f1_w  = data["f1_word_median"][i].astype(float)
-        f2_w  = data["f2_word_median"][i].astype(float)
-        f3_w  = data["f3_word_median"][i].astype(float)
+        f0_t  = _f0_times[i].astype(float)
+        f0_v  = _f0_values[i].astype(float)
+        int_t = _int_times[i].astype(float)
+        int_v = _int_values[i].astype(float)
+        w_s   = _word_starts[i].astype(float)
+        w_e   = _word_ends[i].astype(float)
+        f1_w  = _f1_word_median[i].astype(float)
+        f2_w  = _f2_word_median[i].astype(float)
+        f3_w  = _f3_word_median[i].astype(float)
 
         meta = uid2meta.get(uid, {})
         sent  = meta.get("sentiment_score", "?")
@@ -194,7 +212,15 @@ if not vad_npz_path.exists():
     print(f"[SKIP] {vad_npz_path} not found. Run 35_vad.py with save_vad_envelopes=true.")
 else:
     vdata = np.load(vad_npz_path, allow_pickle=True)
-    vad_uids = list(vdata["utterance_ids"])
+    # Cache arrays (see Cell 2 comment — NpzFile decompresses per __getitem__)
+    _v_uids_all  = vdata["utterance_ids"]
+    _v_wstarts   = vdata["word_starts"]
+    _v_wends     = vdata["word_ends"]
+    _v_valences  = vdata["word_valences"]
+    _v_arousals  = vdata["word_arousals"]
+    _v_dominance = vdata["word_dominances"]
+
+    vad_uids = list(_v_uids_all)
     if TEST_RUN:
         vad_uids = vad_uids[:TEST_RUN_N]
     vuid2idx = {uid: i for i, uid in enumerate(vad_uids)}
@@ -209,17 +235,17 @@ else:
     # Sample utterances with ≥1 covered word
     candidates_v = [
         uid for uid in vad_uids
-        if np.any(~np.isnan(vdata["word_valences"][vuid2idx[uid]].astype(float)))
+        if np.any(~np.isnan(_v_valences[vuid2idx[uid]].astype(float)))
     ]
     sample_v_uids = rng.sample(candidates_v, min(N_EXAMPLES, len(candidates_v)))
 
     for uid in sample_v_uids:
         i = vuid2idx[uid]
-        starts    = vdata["word_starts"][i].astype(float)
-        ends      = vdata["word_ends"][i].astype(float)
-        valences  = vdata["word_valences"][i].astype(float)
-        arousals  = vdata["word_arousals"][i].astype(float)
-        dominances = vdata["word_dominances"][i].astype(float)
+        starts    = _v_wstarts[i].astype(float)
+        ends      = _v_wends[i].astype(float)
+        valences  = _v_valences[i].astype(float)
+        arousals  = _v_arousals[i].astype(float)
+        dominances = _v_dominance[i].astype(float)
 
         meta = uid2meta.get(uid, {})
         vad_meta = uid2vad.get(uid, {})
@@ -455,7 +481,15 @@ else:
 
     if lld_path.exists():
         lld = np.load(lld_path, allow_pickle=True)
-        lld_uids = list(lld["utterance_ids"])
+        # Cache arrays (single decompression each; NpzFile re-loads on each access)
+        _lld_uids_all = lld["utterance_ids"]
+        _f0_lld       = lld["f0_lld"]
+        _loud_lld     = lld["loudness_lld"]
+        _f1_lld       = lld["f1_lld"]
+        _f2_lld       = lld["f2_lld"]
+        _f3_lld       = lld["f3_lld"]
+
+        lld_uids = list(_lld_uids_all)
         if TEST_RUN:
             lld_uids = lld_uids[:TEST_RUN_N]
         uid2lld_idx = {uid: i for i, uid in enumerate(lld_uids)}
@@ -469,8 +503,7 @@ else:
         f0_osm, loud_osm, f1_osm, f2_osm, f3_osm, uids_osm = [], [], [], [], [], []
         for uid, f0_arr, loud_arr, f1_arr, f2_arr, f3_arr in zip(
             lld_uids,
-            lld["f0_lld"], lld["loudness_lld"],
-            lld["f1_lld"], lld["f2_lld"], lld["f3_lld"],
+            _f0_lld, _loud_lld, _f1_lld, _f2_lld, _f3_lld,
         ):
             f0_osm.append(mean_voiced(f0_arr))
             loud_osm.append(float(np.nanmean(loud_arr.astype(float))))
@@ -679,17 +712,18 @@ else:
     # Heatmap (Spearman r)
     _valid = _tab_df.dropna(subset=["Spearman r"])
     if not _valid.empty:
-        fig, ax = plt.subplots(figsize=(3, len(_valid) * 0.55 + 1))
+        # Wide, short strip: one column per feature pair
+        fig, ax = plt.subplots(figsize=(max(6, len(_valid) * 1.1 + 2), 2.4))
         _mat = _valid[["Spearman r"]].values.T.astype(float)
         im = ax.imshow(_mat, cmap="RdYlGn", vmin=-1, vmax=1, aspect="auto")
         ax.set_xticks(range(len(_valid)))
-        ax.set_xticklabels(_valid["Feature"].tolist(), rotation=35, ha="right", fontsize=9)
+        ax.set_xticklabels(_valid["Feature"].tolist(), rotation=25, ha="right", fontsize=9)
         ax.set_yticks([0])
         ax.set_yticklabels(["Spearman r"], fontsize=9)
         for j, val in enumerate(_mat[0]):
-            ax.text(j, 0, f"{val:.2f}", ha="center", va="center", fontsize=8,
+            ax.text(j, 0, f"{val:.2f}", ha="center", va="center", fontsize=9,
                     color="black" if abs(val) < 0.7 else "white")
-        plt.colorbar(im, ax=ax, shrink=0.6)
+        plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
         ax.set_title(f"Praat vs OpenSMILE — {LANG}", fontsize=11)
         plt.tight_layout()
         plt.show()
@@ -786,7 +820,7 @@ if not _ALL_FEATS:
     _ALL_FEATS = ["f0_raw", "intensity_norm", "speechrate_wps",
                   "f0_norm", "intensity_raw", "speechrate_sps"]
 _FEAT_FOR_TOPIC = _ALL_FEATS  # or set to a subset, e.g. ["f0_raw", "speechrate_wps"]
-__JSONL_DIR = Path(cfg["paths"]["data_root"])
+_JSONL_DIR = Path(cfg["paths"]["data_root"])
 
 def _discover_topic_field(jsonl_path: Path, n_probe: int = 200) -> str | None:
     """Probe first n_probe records and return the first field whose name suggests a topic."""
