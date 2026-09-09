@@ -594,7 +594,170 @@ def group_F(lang_dfs: dict, vad_dfs: dict, outdir: Path, results: dict) -> None:
     plt.tight_layout()
     fig.savefig(outdir / "F_sentiment_vs_nrc_vad.png", dpi=140)
     plt.close(fig)
-    print("  Group F → 4 figures  (V/A/D × acoustic + sentiment × VAD)")
+
+    # ─────────────────────────────────────────
+    # F3 · Three showcase Spearman correlations
+    #      per language + one pooled GLOBAL bar
+    # ─────────────────────────────────────────
+    def _corr_pair(merged: pd.DataFrame, feat: str, dim: str) -> tuple:
+        sub = merged.dropna(subset=[feat, dim])
+        if len(sub) < 30: return (np.nan, np.nan, 0)
+        r, p = stats.spearmanr(sub[feat], sub[dim])
+        return (float(r), float(p), int(len(sub)))
+
+    # Build per-lang merges once so all 3 showcase pairs share the same merged frames
+    merges = {}
+    for L in ALL_LANGS:
+        if L in lang_dfs and L in vad_dfs:
+            merges[L] = lang_dfs[L].merge(
+                vad_dfs[L][["utterance_id"] + text_dims],
+                on="utterance_id", how="inner"
+            )
+    # Pooled GLOBAL frame: concatenate utterance rows across langs
+    if merges:
+        pooled = pd.concat(list(merges.values()), ignore_index=True)
+    else:
+        pooled = None
+
+    _showcase = [
+        ("sentiment × NRC-valence",
+         [("sentiment_score", "valence")],
+         "sentiment_score"),
+        ("intensity × NRC-arousal",
+         [("intensity_raw", "arousal"), ("intensity_norm", "arousal")],
+         None),
+        ("NRC-dominance × speech rate",
+         [("speechrate_wps", "dominance"), ("speechrate_cps", "dominance")],
+         None),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), squeeze=False)
+    axes = axes[0]
+    results["F"].setdefault("showcase", {})
+    for ax, (title, pairs, _) in zip(axes, _showcase):
+        # Each subplot: grouped bars over LANGS + GLOBAL; one group per (feat, dim) pair
+        n_groups = len(ALL_LANGS) + 1
+        n_pairs  = len(pairs)
+        width = 0.8 / n_pairs
+        xbase = np.arange(n_groups)
+        for pi, (feat, dim) in enumerate(pairs):
+            heights, texts = [], []
+            for L in ALL_LANGS:
+                if L not in merges:
+                    heights.append(np.nan); texts.append(""); continue
+                r, p, n = _corr_pair(merges[L], feat, dim)
+                heights.append(r)
+                texts.append(f"r={r:+.3f}\np={fmt_p(p)}\nn={n:,}")
+                results["F"]["showcase"].setdefault(f"{feat}_vs_{dim}", {})[L] = {
+                    "spearman_r": r, "spearman_p": p, "n": n}
+            # GLOBAL pooled
+            if pooled is not None:
+                r, p, n = _corr_pair(pooled, feat, dim)
+                heights.append(r)
+                texts.append(f"r={r:+.3f}\np={fmt_p(p)}\nn={n:,}")
+                results["F"]["showcase"].setdefault(f"{feat}_vs_{dim}", {})["GLOBAL_pooled"] = {
+                    "spearman_r": r, "spearman_p": p, "n": n}
+            else:
+                heights.append(np.nan); texts.append("")
+            xs = xbase - 0.4 + width * (pi + 0.5)
+            colors = ["#E63946" if pi == 0 else "#457B9D"] * n_groups
+            bars = ax.bar(xs, heights, width * 0.9,
+                          color=colors, edgecolor="black",
+                          label=f"{FEAT_LABELS.get(feat, feat)} × {dim}")
+            for xi, hi, tx in zip(xs, heights, texts):
+                if not np.isfinite(hi): continue
+                y_off = 0.008 if hi >= 0 else -0.008
+                ax.text(xi, hi + y_off, tx, ha="center",
+                        va="bottom" if hi >= 0 else "top", fontsize=6)
+        ax.axhline(0, color="#000", lw=0.8)
+        ax.set_xticks(xbase)
+        ax.set_xticklabels(ALL_LANGS + ["GLOBAL"], rotation=0)
+        ax.set_ylabel("Spearman r  (utterance-level)")
+        ax.set_title(title, fontsize=11)
+        ax.legend(fontsize=7, frameon=False, loc="best")
+    fig.suptitle("Group F3 · Showcase Spearman correlations "
+                 "(per-language + pooled GLOBAL utterance-level)", fontsize=12)
+    plt.tight_layout()
+    fig.savefig(outdir / "F_showcase_correlations.png", dpi=140)
+    plt.close(fig)
+
+    # ─────────────────────────────────────────
+    # F4 · Auto-scan every (target × VAD) pair
+    #      per language + pooled GLOBAL. Rank by |r|.
+    # ─────────────────────────────────────────
+    scan_targets = ["sentiment_score"] + FLAT_FEATS
+    results["F"].setdefault("scan", {})
+    def _scan(merged: pd.DataFrame) -> list:
+        rows = []
+        for tgt in scan_targets:
+            if tgt not in merged.columns: continue
+            for dim in text_dims:
+                r, p, n = _corr_pair(merged, tgt, dim)
+                if not np.isfinite(r): continue
+                rows.append({"target": tgt, "dim": dim,
+                             "r": r, "p": p, "n": n, "abs_r": abs(r)})
+        rows.sort(key=lambda d: d["abs_r"], reverse=True)
+        return rows
+
+    # Per-language scan → heatmap + ranked JSON
+    scan_by_lang = {}
+    for L in ALL_LANGS:
+        if L not in merges: continue
+        rows = _scan(merges[L])
+        scan_by_lang[L] = rows
+        results["F"]["scan"][L] = rows
+        top = rows[:5]
+        print(f"\n  [F4] {L} — top 5 |r| across (target × VAD dim):")
+        for row in top:
+            print(f"    {row['target']:<20s} × {row['dim']:9s}  "
+                  f"r={row['r']:+.3f}  p={fmt_p(row['p'])}  n={row['n']:,}")
+
+    # Pooled GLOBAL scan
+    if pooled is not None:
+        rows = _scan(pooled)
+        scan_by_lang["GLOBAL_pooled"] = rows
+        results["F"]["scan"]["GLOBAL_pooled"] = rows
+        print(f"\n  [F4] GLOBAL_pooled — top 5 |r|:")
+        for row in rows[:5]:
+            print(f"    {row['target']:<20s} × {row['dim']:9s}  "
+                  f"r={row['r']:+.3f}  p={fmt_p(row['p'])}  n={row['n']:,}")
+
+    # Heatmap: rows = LANGS + GLOBAL, cols = target × dim (flattened, ordered by scan_targets first)
+    pair_cols = [(t, d) for t in scan_targets for d in text_dims]
+    row_labels = [L for L in ALL_LANGS if L in scan_by_lang] + \
+                 (["GLOBAL_pooled"] if "GLOBAL_pooled" in scan_by_lang else [])
+    R = np.full((len(row_labels), len(pair_cols)), np.nan)
+    P = np.full_like(R, np.nan)
+    for i, L in enumerate(row_labels):
+        by_pair = {(row["target"], row["dim"]): row for row in scan_by_lang[L]}
+        for j, (tgt, dim) in enumerate(pair_cols):
+            row = by_pair.get((tgt, dim))
+            if row:
+                R[i, j] = row["r"]; P[i, j] = row["p"]
+    vmax = float(np.nanmax(np.abs(R))) if np.isfinite(R).any() else 1.0
+    fig, ax = plt.subplots(figsize=(max(12, 0.7 * len(pair_cols) + 2),
+                                     0.5 * len(row_labels) + 3))
+    im = ax.imshow(R, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+    # Annotate cells; bold-mark each row's max |r|
+    for i in range(len(row_labels)):
+        row_absmax_j = int(np.nanargmax(np.abs(R[i]))) if np.isfinite(R[i]).any() else -1
+        for j in range(len(pair_cols)):
+            if not np.isfinite(R[i, j]): continue
+            weight = "bold" if j == row_absmax_j else "normal"
+            ax.text(j, i,
+                     f"{R[i, j]:+.3f}\np={fmt_p(P[i, j])}",
+                     ha="center", va="center", fontsize=6,
+                     fontweight=weight)
+    ax.set_xticks(range(len(pair_cols)))
+    ax.set_xticklabels([f"{t}\n×{d[0].upper()}" for t, d in pair_cols],
+                        rotation=45, ha="right", fontsize=7)
+    ax.set_yticks(range(len(row_labels))); ax.set_yticklabels(row_labels)
+    ax.set_title("Group F4 · Auto-scan: Spearman r for every "
+                 "(target × VAD dim) pair  ·  bold = row's max |r|")
+    fig.colorbar(im, ax=ax, label="Spearman r")
+    plt.tight_layout()
+    fig.savefig(outdir / "F_scan_all_pairs.png", dpi=140)
+    plt.close(fig)
+    print("  Group F → 6 figures  (V/A/D × acoustic + sentiment × VAD + showcase + scan)")
 
 
 # ─────────────────────────────────────────────
