@@ -2,15 +2,20 @@
 # ============================================================
 # Script:  50_explore.py  (Jupyter-compatible notebook)
 # Release: 1.0
-# Version: v1.08
+# Version: v1.09
 # Purpose: Debug and exploration for ParlaSpeech sentiment-acoustics.
 #          Envelope viewer, speechrate+transcript, general replotters,
 #          Praat vs OpenSMILE comparison, per-language anomaly inspector.
 #
 # Usage:   Open in VS Code with Jupyter extension (cells = # %% blocks)
+#          Run:  python 5_debug/50_explore.py --save-figs results/figures/explore_full
 #          Convert: jupytext --to notebook 5_debug/50_explore.py --output 5_debug/50_explore.ipynb
 #          Run from: JP1_parlaspeech-sentiment-acoustics/ directory (kernel CWD irrelevant — paths are absolute)
 #
+# v1.09: Cell 6c GLOBAL now iterates two subsets: {GLOBAL: all 5 langs, GLOBAL_no_SI:
+#        HR/CZ/PL/RS} so pre-v4 4-lang results can be compared to v4 five-lang.
+#        Weighting semantics documented in-code: speaker-weighted (each speaker=1 vote
+#        per bin, regardless of language). Adds 3 more figures (21 total in Cell 6c).
 # v1.08: New Cell 1b — per-lang coverage table (VAD % word-level + utt-level, F0/Int/SR
 #        validity %). New Cell 6c — clean editorial trend plots (per-lang and GLOBAL,
 #        F0 per-speaker z-scored + M/F splits, thick orange line, no overlays). New
@@ -1099,29 +1104,55 @@ for _L in ALL_LANGS:
             results_json["editorial_trends"][_L][f"gender_{_tag}"] = _ent
 
 # GLOBAL: pool all languages together
-_globals_ok = [pd.read_csv(idir / f"{_L}_features.tsv", sep="\t",
-                             nrows=TEST_RUN_N if TEST_RUN else None)
-                for _L in ALL_LANGS if (idir / f"{_L}_features.tsv").exists()]
-if _globals_ok:
+#
+# NOTE ON WEIGHTING:
+#   Every "GLOBAL" curve is SPEAKER-WEIGHTED, not language-weighted.
+#   `binned_speaker_mean(df, feat)` first computes per-(speaker,bin) means, then
+#   averages across all speakers per bin. So every speaker contributes one point
+#   per bin they touch, regardless of language. Consequence: languages with more
+#   speakers (PL, HR) dominate the curve; SI (fewest speakers) contributes least.
+#
+#   This matches config `global_trend_weighting = "weighted_speaker"`.
+#   For the equal-language alternative (mean of per-language curves), see Cell 6b's
+#   equal-language / weighted-speaker overlay.
+#
+# Two subsets are computed so pre-v4 (4-lang: HR/CZ/PL/RS) results can be
+# compared to the v4 five-lang world (adds SI). Both use the same speaker-weighted
+# machinery, so the only source of any difference is the SI utterances themselves.
+_GLOBAL_SUBSETS: dict = {
+    "GLOBAL":       ALL_LANGS,
+    "GLOBAL_no_SI": [l for l in ALL_LANGS if l != "SI"],
+}
+
+for _subset_name, _sub_langs in _GLOBAL_SUBSETS.items():
+    _globals_ok = [pd.read_csv(idir / f"{_L}_features.tsv", sep="\t",
+                                nrows=TEST_RUN_N if TEST_RUN else None)
+                    for _L in _sub_langs if (idir / f"{_L}_features.tsv").exists()]
+    if not _globals_ok:
+        continue
     _df_g = pd.concat(_globals_ok, ignore_index=True)
-    print(f"\n=== Cell 6c · GLOBAL (all {len(_globals_ok)} langs merged) · editorial trends ===")
+    _lang_tag = "+".join(_sub_langs)
+    print(f"\n=== Cell 6c · {_subset_name} ({_lang_tag}, {len(_globals_ok)} langs merged, "
+          f"speaker-weighted) · editorial trends ===")
     _ent = _plot_editorial_panel(
         _df_g, _EDIT_FEATS,
-        title_prefix="GLOBAL — pooled  ·  F0 per-speaker z-scored",
-        save_stub="cell06c_GLOBAL_pooled_zscore",
+        title_prefix=f"{_subset_name} ({_lang_tag}) — pooled  ·  F0 per-speaker z-scored",
+        save_stub=f"cell06c_{_subset_name}_pooled_zscore",
         feat_transforms={"f0_raw": lambda d: zscore_per_speaker(d, "f0_raw")},
     )
-    results_json["editorial_trends"].setdefault("GLOBAL", {})["pooled_zscore"] = _ent
+    results_json["editorial_trends"].setdefault(_subset_name, {})["_langs"] = _sub_langs
+    results_json["editorial_trends"][_subset_name]["_weighting"] = "speaker-weighted (each speaker=1 vote per bin)"
+    results_json["editorial_trends"][_subset_name]["pooled_zscore"] = _ent
     if "gender" in _df_g.columns:
         for _g, _tag in [("f", "F"), ("m", "M")]:
             _sub = _df_g[_df_g["gender"].str.lower().str[0] == _g]
             if _sub.empty: continue
             _ent = _plot_editorial_panel(
                 _sub, _EDIT_FEATS,
-                title_prefix=f"GLOBAL — {_tag} speakers only  ·  F0 raw",
-                save_stub=f"cell06c_GLOBAL_gender_{_tag}",
+                title_prefix=f"{_subset_name} ({_lang_tag}) — {_tag} speakers only  ·  F0 raw",
+                save_stub=f"cell06c_{_subset_name}_gender_{_tag}",
             )
-            results_json["editorial_trends"]["GLOBAL"][f"gender_{_tag}"] = _ent
+            results_json["editorial_trends"][_subset_name][f"gender_{_tag}"] = _ent
 
 # %% [markdown]
 # ## Cell 7 — Praat vs OpenSMILE: Systematic Correlation Table + Heatmap
