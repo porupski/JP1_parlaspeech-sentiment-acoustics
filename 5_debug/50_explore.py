@@ -1037,6 +1037,10 @@ else:
 
 # %%
 _EDIT_FEATS = INV_FEATS  # ["f0_raw", "speechrate_wps", "intensity_norm"]
+# Alternate feature set: raw dB intensity instead of per-session z-scored. Used to
+# expose how much per-session normalisation flattens the curve — especially for
+# the "arousal uptick" question. Order kept identical to _EDIT_FEATS.
+_EDIT_FEATS_INT_RAW = ["f0_raw", "speechrate_wps", "intensity_raw"]
 _x_edit = 0.5 * (np.linspace(0, 5, N_BINS + 1)[:-1] + np.linspace(0, 5, N_BINS + 1)[1:])
 results_json.setdefault("editorial_trends", {})
 
@@ -1081,14 +1085,23 @@ for _L in ALL_LANGS:
     _df_L = pd.read_csv(_fp, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
     print(f"\n=== Cell 6c · {_L} · editorial trends ===")
 
-    # Variant 1: pooled with F0 z-scored per speaker
+    # Variant 1: pooled with F0 z-scored per speaker, intensity per-session z-scored
     _ent = _plot_editorial_panel(
         _df_L, _EDIT_FEATS,
-        title_prefix=f"{_L} — pooled  ·  F0 per-speaker z-scored",
+        title_prefix=f"{_L} — pooled  ·  F0 per-speaker z-scored  ·  Intensity per-session z",
         save_stub=f"cell06c_{_L}_pooled_zscore",
         feat_transforms={"f0_raw": lambda d: zscore_per_speaker(d, "f0_raw")},
     )
     results_json["editorial_trends"].setdefault(_L, {})["pooled_zscore"] = _ent
+
+    # Variant 1b: same as (1) but INTENSITY_RAW (dB) instead of intensity_norm
+    _ent_raw = _plot_editorial_panel(
+        _df_L, _EDIT_FEATS_INT_RAW,
+        title_prefix=f"{_L} — pooled  ·  F0 per-speaker z-scored  ·  Intensity raw dB",
+        save_stub=f"cell06c_{_L}_pooled_intensity_raw",
+        feat_transforms={"f0_raw": lambda d: zscore_per_speaker(d, "f0_raw")},
+    )
+    results_json["editorial_trends"][_L]["pooled_intensity_raw"] = _ent_raw
 
     # Variants 2 & 3: gender-split, raw F0
     if "gender" in _df_L.columns:
@@ -1136,13 +1149,23 @@ for _subset_name, _sub_langs in _GLOBAL_SUBSETS.items():
           f"speaker-weighted) · editorial trends ===")
     _ent = _plot_editorial_panel(
         _df_g, _EDIT_FEATS,
-        title_prefix=f"{_subset_name} ({_lang_tag}) — pooled  ·  F0 per-speaker z-scored",
+        title_prefix=f"{_subset_name} ({_lang_tag}) — pooled  ·  F0 per-speaker z-scored  ·  Intensity per-session z",
         save_stub=f"cell06c_{_subset_name}_pooled_zscore",
         feat_transforms={"f0_raw": lambda d: zscore_per_speaker(d, "f0_raw")},
     )
     results_json["editorial_trends"].setdefault(_subset_name, {})["_langs"] = _sub_langs
     results_json["editorial_trends"][_subset_name]["_weighting"] = "speaker-weighted (each speaker=1 vote per bin)"
     results_json["editorial_trends"][_subset_name]["pooled_zscore"] = _ent
+
+    # Same pooling, but plot INTENSITY_RAW (dB) instead of intensity_norm.
+    # Lets us see how much per-session z-scoring flattens the arousal uptick.
+    _ent_raw = _plot_editorial_panel(
+        _df_g, _EDIT_FEATS_INT_RAW,
+        title_prefix=f"{_subset_name} ({_lang_tag}) — pooled  ·  F0 per-speaker z-scored  ·  Intensity raw dB",
+        save_stub=f"cell06c_{_subset_name}_pooled_intensity_raw",
+        feat_transforms={"f0_raw": lambda d: zscore_per_speaker(d, "f0_raw")},
+    )
+    results_json["editorial_trends"][_subset_name]["pooled_intensity_raw"] = _ent_raw
     if "gender" in _df_g.columns:
         for _g, _tag in [("f", "F"), ("m", "M")]:
             _sub = _df_g[_df_g["gender"].str.lower().str[0] == _g]
@@ -1153,6 +1176,302 @@ for _subset_name, _sub_langs in _GLOBAL_SUBSETS.items():
                 save_stub=f"cell06c_{_subset_name}_gender_{_tag}",
             )
             results_json["editorial_trends"][_subset_name][f"gender_{_tag}"] = _ent
+
+# %% [markdown]
+# ## Cell 6d — Paper Figure 3 replica: normalised equal-language global trend
+#
+# Reproduces the paper's `Global_AVG_all_langs_all_feats_solo.png` construction:
+#     per-speaker curves → min-max normalise per feature → mean per language
+#     → mean across languages (equal_language weighting).
+#
+# Produced twice per invocation, so the "moved the minimum" question can be answered:
+#     · GLOBAL_no_SI  (HR+CZ+PL+RS)  — matches the original paper's 4-language pool
+#     · GLOBAL_with_SI (HR+CZ+PL+RS+SI) — v4 5-language pool
+#
+# Also reports the auto-detected minimum bin so it can be compared to the paper's 3.5.
+# Uses the same feature set as h3_split (main + appendix), matching 32_h3_split.py.
+
+# %%
+_FIG3_FEATS = cfg["analysis"]["features_main"] + cfg["analysis"]["features_appendix"]
+_FIG3_SUBSETS = {
+    "GLOBAL_no_SI":   [l for l in ALL_LANGS if l != "SI"],
+    "GLOBAL_with_SI": list(ALL_LANGS),
+}
+
+def _fig3_global_trend(sub_langs: list, feats: list, n_bins: int) -> "tuple[np.ndarray, dict]":
+    """Paper-style global trend: per-speaker curves → min-max normalise per feature
+    → mean per language → mean across languages (equal_language weighting).
+
+    Returns (global_curve[n_bins], per_language_curves[lang][n_bins]).
+    Mirrors utils build_global_trend but confined to the explore workflow.
+    """
+    lang_trends: dict[str, np.ndarray] = {}
+    for _lang in sub_langs:
+        _fp = idir / f"{_lang}_features.tsv"
+        if not _fp.exists():
+            continue
+        _df = pd.read_csv(_fp, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+        _df["bin"] = pd.cut(_df["sentiment_score"],
+                            bins=np.linspace(0, 5, n_bins + 1),
+                            labels=False, include_lowest=True)
+        _per_feat_means = []
+        for _feat in feats:
+            if _feat not in _df.columns:
+                continue
+            _spk_normed = []
+            for _spk, _grp in _df.groupby("speaker_id"):
+                _curve = _grp.dropna(subset=[_feat]).groupby("bin")[_feat].mean() \
+                             .reindex(range(n_bins)).values.astype(float)
+                if np.isfinite(_curve).sum() < 5:
+                    continue
+                _cmin, _cmax = np.nanmin(_curve), np.nanmax(_curve)
+                if _cmax == _cmin:
+                    continue
+                _spk_normed.append((_curve - _cmin) / (_cmax - _cmin))
+            if _spk_normed:
+                _per_feat_means.append(np.nanmean(_spk_normed, axis=0))
+        if _per_feat_means:
+            lang_trends[_lang] = np.nanmean(_per_feat_means, axis=0)
+    if not lang_trends:
+        return np.full(n_bins, np.nan), {}
+    _global = np.nanmean(list(lang_trends.values()), axis=0)
+    return _global, lang_trends
+
+_x_fig3 = 0.5 * (np.linspace(0, 5, N_BINS + 1)[:-1] + np.linspace(0, 5, N_BINS + 1)[1:])
+results_json.setdefault("fig3_global_trend", {})
+
+for _subset_name, _sub_langs in _FIG3_SUBSETS.items():
+    print(f"\n=== Cell 6d · {_subset_name} · normalised equal-language global trend ===")
+    _global, _lang_curves = _fig3_global_trend(_sub_langs, _FIG3_FEATS, N_BINS)
+    if not np.isfinite(_global).any():
+        print(f"[{_subset_name}] no data — skipping"); continue
+    _min_bin  = int(np.nanargmin(_global))
+    _min_x    = _x_fig3[_min_bin]
+    _max_bin  = int(np.nanargmax(_global))
+    _max_x    = _x_fig3[_max_bin]
+    logprint(f"[{_subset_name}] langs={list(_lang_curves.keys())}", indent=1)
+    logprint(f"[{_subset_name}] global min at bin {_min_bin} (sentiment {_min_x:.3f})", indent=1)
+    logprint(f"[{_subset_name}] global max at bin {_max_bin} (sentiment {_max_x:.3f})", indent=1)
+
+    # Plot: bold orange global + light-grey per-language curves underneath
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for _lang, _curve in _lang_curves.items():
+        ax.plot(_x_fig3, _curve, color="#BBBBBB", lw=1.0, alpha=0.7,
+                label=_lang)
+    ax.plot(_x_fig3, _global, color="#F49F1C", lw=2.5,
+            label="Equal-language global")
+    ax.axvline(_min_x, color="#457B9D", lw=1.0, ls="--",
+               label=f"min @ {_min_x:.2f}")
+    ax.axvline(3.5, color="#888888", lw=0.8, ls=":", label="paper split 3.5")
+    ax.set_xlabel("Sentiment Logit  (0 = Negative → 5 = Positive)")
+    ax.set_ylabel("Normalized Feature Value (0-1)")
+    ax.set_title(f"{_subset_name} — normalised global trend "
+                 f"(min-max per feature, equal-language)")
+    ax.legend(loc="upper right", fontsize=8, frameon=False)
+    plt.tight_layout()
+    save_fig(f"cell06d_{_subset_name}_fig3_replica")
+
+    results_json["fig3_global_trend"][_subset_name] = {
+        "langs":     list(_lang_curves.keys()),
+        "features":  _FIG3_FEATS,
+        "weighting": "equal_language (per-feat min-max → mean per lang → mean across langs)",
+        "global":    [None if not np.isfinite(v) else float(v) for v in _global],
+        "min_bin":   _min_bin,
+        "min_sentiment": float(_min_x),
+        "max_bin":   _max_bin,
+        "max_sentiment": float(_max_x),
+    }
+
+
+# %% [markdown]
+# ## Cell 6e — Quadratic-AH: reframed arousal test
+#
+# Instead of a fixed inflection point at sentiment 3.5, we test each language×feature
+# for **non-monotonic curvature**. Fit y = β₀ + β₁·s + β₂·s² on the 60-bin speaker-
+# averaged curve; the quadratic coefficient β₂ tells us:
+#
+#     β₂ > 0, p < 0.05  →  U-shape (curve rises again at extremes) → arousal candidate
+#     β₂ < 0, p < 0.05  →  inverted-U (peak in the middle)
+#     β₂ ≈ 0            →  linear only (valence only)
+#
+# For each cell we also compute the vertex sentiment s* = -β₁ / (2β₂). If s* falls
+# inside (0, 5) and β₂ > 0, that's where the "arousal boost" begins.
+#
+# Processed:
+#   · Each of the 5 languages individually × features_main + features_appendix
+#     (raw speaker-averaged bin curves; no cross-language pooling)
+#   · GLOBAL_no_SI  (HR+CZ+PL+RS) on the normalised equal-language global (Cell 6d)
+#   · GLOBAL_with_SI (HR+CZ+PL+RS+SI) on the normalised equal-language global (Cell 6d)
+#
+# Note: the two global rows use the per-feature min-max normalised aggregate curve,
+# matching the paper's Figure 3 construction. The per-language rows are per-feature
+# raw bin means (no normalisation needed within a single feature).
+
+# %%
+def _ols_quadratic(x: np.ndarray, y: np.ndarray) -> dict:
+    """Fit y = β₀ + β₁ x + β₂ x². Return coefficients, p-values, R², vertex.
+
+    Manual OLS: β = (XᵀX)⁻¹ Xᵀy; SE(β) = √(σ̂² · diag((XᵀX)⁻¹)); t = β / SE;
+    p from two-sided t on (n − 3) dof.
+    """
+    mask = np.isfinite(x) & np.isfinite(y)
+    x, y = x[mask], y[mask]
+    n = len(y)
+    if n < 5:
+        return {k: None for k in
+                ("b0", "b1", "b2", "p_b1", "p_b2", "r2_lin", "r2_quad",
+                 "vertex_s", "shape", "n")}
+    X = np.column_stack([np.ones(n), x, x * x])
+    XtX_inv = np.linalg.inv(X.T @ X)
+    beta = XtX_inv @ X.T @ y
+    yhat = X @ beta
+    resid = y - yhat
+    sigma2 = float(resid @ resid) / (n - 3)
+    se = np.sqrt(sigma2 * np.diag(XtX_inv))
+    tvals = beta / se
+    pvals = 2.0 * (1.0 - stats.t.cdf(np.abs(tvals), df=n - 3))
+
+    ss_tot = float(((y - y.mean()) ** 2).sum())
+    ss_res_q = float((resid ** 2).sum())
+    r2_quad = 1.0 - ss_res_q / ss_tot if ss_tot > 0 else np.nan
+
+    # Linear-only R² for context
+    Xl = np.column_stack([np.ones(n), x])
+    bl = np.linalg.inv(Xl.T @ Xl) @ Xl.T @ y
+    ss_res_l = float(((y - Xl @ bl) ** 2).sum())
+    r2_lin = 1.0 - ss_res_l / ss_tot if ss_tot > 0 else np.nan
+
+    b1, b2 = float(beta[1]), float(beta[2])
+    vertex_s = (-b1 / (2 * b2)) if abs(b2) > 1e-12 else np.inf
+    p_b2 = float(pvals[2])
+    if p_b2 < 0.05 and b2 > 0:
+        shape = "U"
+    elif p_b2 < 0.05 and b2 < 0:
+        shape = "∩"
+    else:
+        shape = "linear"
+    return {
+        "n":        n,
+        "b0":       float(beta[0]),
+        "b1":       b1,
+        "b2":       b2,
+        "p_b1":     float(pvals[1]),
+        "p_b2":     p_b2,
+        "r2_lin":   float(r2_lin),
+        "r2_quad":  float(r2_quad),
+        "vertex_s": float(vertex_s),
+        "shape":    shape,
+    }
+
+
+_QAH_FEATS = cfg["analysis"]["features_main"] + cfg["analysis"]["features_appendix"]
+_x_qah = 0.5 * (np.linspace(0, 5, N_BINS + 1)[:-1] + np.linspace(0, 5, N_BINS + 1)[1:])
+results_json.setdefault("quadratic_ah", {})
+
+def _fmt_p(p):
+    if p is None or not np.isfinite(p): return "  n/a  "
+    return f"<{1e-4:.0e}" if p < 1e-4 else f"{p:.4f}"
+
+def _fmt_v(v):
+    if v is None or not np.isfinite(v): return "  n/a "
+    return f"{v:+.3f}"
+
+def _print_header():
+    print(f"  {'feature':<20s} {'β₁':>8s} {'β₂':>8s} "
+          f"{'p(β₁)':>8s} {'p(β₂)':>8s} {'R²lin':>7s} {'R²quad':>7s} "
+          f"{'vertex':>8s}  shape")
+
+def _print_row(feat, r):
+    v_disp = f"{r['vertex_s']:+.2f}" if (r['vertex_s'] is not None and
+                                          np.isfinite(r['vertex_s']) and
+                                          0 <= r['vertex_s'] <= 5) else "  ---"
+    print(f"  {feat:<20s} {_fmt_v(r['b1'])} {_fmt_v(r['b2'])} "
+          f"{_fmt_p(r['p_b1'])} {_fmt_p(r['p_b2'])} "
+          f"{r['r2_lin']:+.3f} {r['r2_quad']:+.3f} "
+          f"{v_disp:>8s}  {r['shape']}")
+
+# --- Per-language rows ---
+for _L in ALL_LANGS:
+    _fp = idir / f"{_L}_features.tsv"
+    if not _fp.exists():
+        continue
+    _df = pd.read_csv(_fp, sep="\t", nrows=TEST_RUN_N if TEST_RUN else None)
+    _df["bin"] = pd.cut(_df["sentiment_score"],
+                        bins=np.linspace(0, 5, N_BINS + 1),
+                        labels=False, include_lowest=True)
+    print(f"\n=== Cell 6e · {_L} · quadratic-AH ===")
+    _print_header()
+    _lang_out = {}
+    _fig, _axes = plt.subplots(1, len(_QAH_FEATS),
+                                figsize=(len(_QAH_FEATS) * 4, 3.5),
+                                squeeze=False)
+    _axes = _axes[0]
+    for _ax, _feat in zip(_axes, _QAH_FEATS):
+        if _feat not in _df.columns:
+            _ax.set_title(f"{_feat}\n(missing)"); continue
+        # Speaker-averaged bin means for this lang×feat
+        _spk_curves = []
+        for _spk, _grp in _df.dropna(subset=[_feat]).groupby("speaker_id"):
+            _c = _grp.groupby("bin")[_feat].mean().reindex(range(N_BINS)).values
+            _spk_curves.append(_c)
+        if not _spk_curves:
+            continue
+        _y = np.nanmean(_spk_curves, axis=0)
+        _r = _ols_quadratic(_x_qah, _y)
+        _lang_out[_feat] = _r
+        _print_row(_feat, _r)
+
+        _ax.plot(_x_qah, _y, color="#F49F1C", lw=1.8, label="curve")
+        _yhat = _r["b0"] + _r["b1"] * _x_qah + _r["b2"] * _x_qah ** 2
+        _ax.plot(_x_qah, _yhat, color="#457B9D", lw=1.2, ls="--",
+                  label=f"quad ({_r['shape']})")
+        if (_r["vertex_s"] is not None and np.isfinite(_r["vertex_s"])
+                and 0 <= _r["vertex_s"] <= 5 and _r["p_b2"] is not None
+                and _r["p_b2"] < 0.05):
+            _ax.axvline(_r["vertex_s"], color="#888", lw=0.8, ls=":",
+                         label=f"vertex {_r['vertex_s']:+.2f}")
+        _ax.set_title(f"{FEAT_LABELS.get(_feat, _feat)}"
+                       f"\nβ₂={_r['b2']:+.3g}  p={_fmt_p(_r['p_b2']).strip()}",
+                       fontsize=9)
+        _ax.set_xlabel("Sentiment"); _ax.legend(fontsize=7, frameon=False)
+    _fig.suptitle(f"{_L} — quadratic-AH per feature", fontsize=11)
+    plt.tight_layout()
+    save_fig(f"cell06e_{_L}_quadratic_ah")
+    results_json["quadratic_ah"][_L] = _lang_out
+
+# --- Global rows: fit on Cell 6d's normalised equal-language global curves ---
+# Reuse _FIG3_SUBSETS / _fig3_global_trend so both cells stay in lock-step.
+print(f"\n=== Cell 6e · GLOBAL quadratic-AH on normalised equal-language curves ===")
+_print_header()
+_fig, _axes = plt.subplots(1, len(_FIG3_SUBSETS), figsize=(10, 4), squeeze=False)
+_axes = _axes[0]
+for _ax, (_subset_name, _sub_langs) in zip(_axes, _FIG3_SUBSETS.items()):
+    _global, _lang_curves = _fig3_global_trend(_sub_langs, _FIG3_FEATS, N_BINS)
+    if not np.isfinite(_global).any():
+        _ax.set_title(f"{_subset_name}\n(no data)"); continue
+    _r = _ols_quadratic(_x_qah, _global)
+    print(f"[{_subset_name}]")
+    _print_row("normalised_global", _r)
+    _ax.plot(_x_qah, _global, color="#F49F1C", lw=2.0, label="global (norm.)")
+    _yhat = _r["b0"] + _r["b1"] * _x_qah + _r["b2"] * _x_qah ** 2
+    _ax.plot(_x_qah, _yhat, color="#457B9D", lw=1.3, ls="--",
+              label=f"quad ({_r['shape']})")
+    if (_r["vertex_s"] is not None and np.isfinite(_r["vertex_s"])
+            and 0 <= _r["vertex_s"] <= 5 and _r["p_b2"] is not None
+            and _r["p_b2"] < 0.05):
+        _ax.axvline(_r["vertex_s"], color="#888", lw=0.8, ls=":",
+                     label=f"vertex {_r['vertex_s']:+.2f}")
+    _ax.axvline(3.5, color="#BBB", lw=0.8, ls=":", label="paper 3.5")
+    _ax.set_title(f"{_subset_name} · β₂={_r['b2']:+.3g}  "
+                   f"p={_fmt_p(_r['p_b2']).strip()}  ({_r['shape']})",
+                   fontsize=10)
+    _ax.set_xlabel("Sentiment"); _ax.set_ylabel("Normalized (0–1)")
+    _ax.legend(fontsize=7, frameon=False)
+    results_json["quadratic_ah"].setdefault(_subset_name, {})["normalised_global"] = _r
+_fig.suptitle("GLOBAL quadratic-AH (normalised equal-language curves)", fontsize=11)
+plt.tight_layout()
+save_fig("cell06e_GLOBAL_quadratic_ah")
+
 
 # %% [markdown]
 # ## Cell 7 — Praat vs OpenSMILE: Systematic Correlation Table + Heatmap
