@@ -806,6 +806,164 @@ def group_G(rdir: Path, outdir: Path, results: dict) -> None:
 
 
 # ─────────────────────────────────────────────
+# Group H: Cross-entity similarity metric
+#
+# For each feature variant, computes a 7×7 Pearson-r matrix between the
+# speaker-averaged 60-bin curves of {5 langs + 2 globals}. High r = shape
+# is language-universal for that feature; low r off-diagonal = language-
+# specific.
+#
+# Also computes:
+#   · per-lang mean r vs the other 4 langs ("typicality" — how close is
+#     this lang to the aggregate 4-lang picture?)
+#   · per-lang r vs GLOBAL_no_SI and GLOBAL_with_SI (how well is this lang
+#     captured by the pooled aggregate?)
+#   · per-bin coefficient of variation across the 5 langs (which sentiment
+#     regions are the disagreement concentrated in?)
+# ─────────────────────────────────────────────
+def group_H(lang_dfs: dict, n_bins: int, outdir: Path, results: dict) -> None:
+    print("\n=== Group H · cross-entity similarity metric ===")
+    results.setdefault("H", {})
+    # Build entity curves per feature
+    entities: list[tuple[str, np.ndarray]] = []  # list of (name, curve)
+    # placeholder — filled per feature inside the loop
+
+    # ── per-feature 7×7 Pearson r heatmap ────────────────────────
+    typicality_rows = []           # for the summary figure below
+    global_match_rows = []         # r vs GLOBAL_no_SI / GLOBAL_with_SI
+    bin_cov_rows = []              # per-bin CoV across langs
+
+    for feat in FLAT_FEATS:
+        # Build curves for this feature
+        curves = []           # list of (name, np.ndarray)
+        # 5 languages
+        for L in ALL_LANGS:
+            if L in lang_dfs:
+                curves.append((L, speaker_averaged_curve(lang_dfs[L], feat, n_bins)))
+        # 2 globals (equal-language)
+        for name, subset in [("GLOBAL_no_SI",   LANGS_4),
+                             ("GLOBAL_with_SI", ALL_LANGS)]:
+            if not all(l in lang_dfs for l in subset): continue
+            lc = {l: speaker_averaged_curve(lang_dfs[l], feat, n_bins) for l in subset}
+            curves.append((name, equal_language_pool(lc, n_bins)))
+
+        names = [c[0] for c in curves]
+        Y = np.vstack([c[1] for c in curves])                # (n_entities, n_bins)
+
+        # Correlation matrix (Pearson, over finite bins per pair)
+        n = len(curves)
+        R = np.full((n, n), np.nan)
+        for i in range(n):
+            for j in range(n):
+                if j < i: R[i, j] = R[j, i]; continue
+                m = np.isfinite(Y[i]) & np.isfinite(Y[j])
+                if m.sum() < 5: continue
+                R[i, j] = float(np.corrcoef(Y[i, m], Y[j, m])[0, 1])
+
+        # Save the R matrix
+        results["H"].setdefault(feat, {})["pearson_matrix"] = {
+            "labels": names,
+            "R":      [[None if not np.isfinite(x) else float(x) for x in row]
+                        for row in R],
+        }
+
+        # Heatmap figure
+        fig, ax = plt.subplots(figsize=(max(6, 0.7 * n + 3), max(5, 0.6 * n + 2.5)))
+        vmax = 1.0
+        im = ax.imshow(R, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+        for i in range(n):
+            for j in range(n):
+                if not np.isfinite(R[i, j]): continue
+                w = "bold" if i == j else "normal"
+                ax.text(j, i, f"{R[i, j]:+.2f}", ha="center", va="center",
+                         fontsize=8, fontweight=w)
+        ax.set_xticks(range(n)); ax.set_xticklabels(names, rotation=30, ha="right")
+        ax.set_yticks(range(n)); ax.set_yticklabels(names)
+        ax.set_title(f"Group H · Pearson r across 60-bin curves · {FEAT_LABELS[feat]}  "
+                     f"(diagonal = 1; off-diagonal = shape agreement)")
+        fig.colorbar(im, ax=ax, label="Pearson r")
+        plt.tight_layout()
+        fig.savefig(outdir / f"H_similarity_{feat}.png", dpi=140)
+        plt.close(fig)
+
+        # Per-lang typicality: mean r vs the OTHER 4 langs (only)
+        lang_idx = {n: i for i, n in enumerate(names)}
+        typicality = {}
+        for L in ALL_LANGS:
+            if L not in lang_idx: continue
+            i = lang_idx[L]
+            peers = [lang_idx[l] for l in ALL_LANGS if l != L and l in lang_idx]
+            vals = [R[i, j] for j in peers if np.isfinite(R[i, j])]
+            typicality[L] = float(np.mean(vals)) if vals else np.nan
+        typicality_rows.append({"feature": feat, **typicality})
+        results["H"][feat]["typicality"] = typicality
+
+        # Per-lang r vs GLOBAL_no_SI / GLOBAL_with_SI
+        gm = {}
+        for L in ALL_LANGS:
+            if L not in lang_idx: continue
+            for gname in ["GLOBAL_no_SI", "GLOBAL_with_SI"]:
+                if gname not in lang_idx: continue
+                gm[f"{L}_vs_{gname}"] = float(R[lang_idx[L], lang_idx[gname]]) \
+                    if np.isfinite(R[lang_idx[L], lang_idx[gname]]) else np.nan
+        results["H"][feat]["global_match"] = gm
+        global_match_rows.append({"feature": feat, **gm})
+
+        # Per-bin CoV across the 5 langs
+        lang_curves = np.vstack([Y[lang_idx[L]] for L in ALL_LANGS if L in lang_idx])
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mu = np.nanmean(lang_curves, axis=0)
+            sd = np.nanstd(lang_curves, axis=0)
+            cov = np.abs(sd / np.where(np.abs(mu) < 1e-9, np.nan, mu))
+        bin_cov_rows.append({"feature": feat, "cov": cov.tolist()})
+        results["H"][feat]["bin_cov"] = [None if not np.isfinite(v) else float(v)
+                                          for v in cov]
+
+    # ── Summary heatmap: features × langs, cell = typicality ─────
+    tt = pd.DataFrame(typicality_rows).set_index("feature").reindex(FLAT_FEATS)
+    fig, ax = plt.subplots(figsize=(max(8, 0.9 * len(ALL_LANGS) + 4),
+                                     0.55 * len(FLAT_FEATS) + 2.5))
+    T = tt[ALL_LANGS].values.astype(float)
+    im = ax.imshow(T, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    for i in range(len(FLAT_FEATS)):
+        for j in range(len(ALL_LANGS)):
+            v = T[i, j]
+            if not np.isfinite(v): continue
+            ax.text(j, i, f"{v:+.2f}", ha="center", va="center", fontsize=8)
+    ax.set_xticks(range(len(ALL_LANGS))); ax.set_xticklabels(ALL_LANGS)
+    ax.set_yticks(range(len(FLAT_FEATS)))
+    ax.set_yticklabels([FEAT_LABELS[f] for f in FLAT_FEATS])
+    ax.set_title("Group H · Typicality  (mean Pearson r vs the OTHER 4 languages, per feature)  "
+                 "red = shape agrees with peers · blue = language-specific")
+    fig.colorbar(im, ax=ax, label="mean Pearson r vs peers")
+    plt.tight_layout()
+    fig.savefig(outdir / "H_typicality_summary.png", dpi=140)
+    plt.close(fig)
+
+    # ── Per-bin CoV multi-panel (rows = features) ────────────────
+    x_centres = 0.5 * (np.linspace(0, 5, n_bins + 1)[:-1] + np.linspace(0, 5, n_bins + 1)[1:])
+    fig, axes = plt.subplots(len(FLAT_FEATS), 1, figsize=(11, 1.6 * len(FLAT_FEATS)),
+                              sharex=True, squeeze=False)
+    axes = axes[:, 0]
+    for ax, feat in zip(axes, FLAT_FEATS):
+        row = next(r for r in bin_cov_rows if r["feature"] == feat)
+        y = np.asarray(row["cov"], dtype=float)
+        ax.plot(x_centres, y, color="#457B9D", lw=1.3)
+        ax.fill_between(x_centres, 0, y, color="#457B9D", alpha=0.15)
+        ax.set_ylabel(FEAT_LABELS[feat], fontsize=8)
+        ax.grid(True, alpha=0.25)
+    axes[-1].set_xlabel("Sentiment  (0 = Neg → 5 = Pos)")
+    fig.suptitle("Group H · Per-bin coefficient of variation across the 5 languages  "
+                 "(high = disagreement between langs at that sentiment level)",
+                 fontsize=11)
+    plt.tight_layout()
+    fig.savefig(outdir / "H_bin_variability.png", dpi=140)
+    plt.close(fig)
+
+    print(f"  Group H → {len(FLAT_FEATS)} heatmaps + typicality summary + bin-CoV multi-panel")
+
+
+# ─────────────────────────────────────────────
 # Summary TSV
 # ─────────────────────────────────────────────
 def write_summary_tsv(results: dict, out_tsv: Path) -> None:
@@ -844,8 +1002,8 @@ def parse_args():
     p.add_argument("--config", default="config.json")
     p.add_argument("--outdir", default=None,
                    help="Override output subdir (default: results/figures/all_angles)")
-    p.add_argument("--groups", default="ABCDEFG",
-                   help="Which groups to run (subset of ABCDEFG, e.g. --groups AD)")
+    p.add_argument("--groups", default="ABCDEFGH",
+                   help="Which groups to run (subset of ABCDEFGH, e.g. --groups AH)")
     return p.parse_args()
 
 
@@ -860,7 +1018,7 @@ def main():
     figdir.mkdir(parents=True, exist_ok=True)
     tabdir = rdir / "tables"; tabdir.mkdir(parents=True, exist_ok=True)
 
-    GROUPS_ENABLED = {g: (g in args.groups) for g in "ABCDEFG"}
+    GROUPS_ENABLED = {g: (g in args.groups) for g in "ABCDEFGH"}
     print(f"Groups enabled: {[g for g,on in GROUPS_ENABLED.items() if on]}")
     print(f"Output figures  → {figdir}")
     print(f"Output tables   → {tabdir}")
@@ -876,6 +1034,7 @@ def main():
     if GROUPS_ENABLED["E"]: group_E(lang_dfs, n_bins, figdir, results)
     if GROUPS_ENABLED["F"]: group_F(lang_dfs, vad_dfs, figdir, results)
     if GROUPS_ENABLED["G"]: group_G(rdir, figdir, results)
+    if GROUPS_ENABLED["H"]: group_H(lang_dfs, n_bins, figdir, results)
 
     write_summary_tsv(results, tabdir / "all_angles_summary.tsv")
     out_json = rdir / "all_angles.json"

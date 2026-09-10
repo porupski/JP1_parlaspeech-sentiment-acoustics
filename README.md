@@ -118,8 +118,8 @@ run_all.py              End-to-end pipeline runner.
 utils/                  Shared library. Import from here; do not copy.
 tests/                  Pytest unit tests.
 archive/                Original scripts. Do not modify.
-paper/                  LaTeX source.
 results/                Generated tables, figures, and numbers.json.
+../paper/               LaTeX source (sibling to this repo, not tracked here).
 ```
 
 ---

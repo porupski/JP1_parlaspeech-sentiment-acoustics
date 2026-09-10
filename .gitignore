@@ -1,23 +1,37 @@
-# --- data (large files, not committed) ---
+# Rule of thumb: shipped-empty folders keep their `.gitkeep` marker; everything
+# else in them is generated and MUST NOT be committed.
+#
+# The pattern `folder/*` + `!folder/.gitkeep` (or similar) is what makes
+# an empty directory itself trackable but its contents ignored.
+
+# ─── data (raw + intermediate; large, not committed) ────────────────
+data/geo/
 data/intermediate/
 data/lexicons/
 data/sample/
 
-misc/
+# ─── generated pipeline outputs (results/) ──────────────────────────
+# Keep the results/ directory itself (via .gitkeep) but ignore everything in it.
+results/*
+!results/.gitkeep
+results-final/
+results-*/
 
-tests/
-archive/
+# ─── local runtime / scratch dirs ───────────────────────────────────
 logs/*
+!logs/.gitkeep
+misc/*
+!misc/.gitkeep
 
-# --- generated pipeline outputs ---
-results/tables/
-results/figures/
-results/*.json
+# ─── testing / archive (kept, but their outputs and caches aren't) ──
+tests/__pycache__/
+tests/.pytest_cache/
+archive/
 
-# --- jupytext-generated notebooks (source is the .py file) ---
+# ─── jupytext-generated notebooks (source is the .py file) ──────────
 #*.ipynb
 
-# --- Python ---
+# ─── Python bytecode + build artifacts ──────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -26,10 +40,23 @@ __pycache__/
 .eggs/
 dist/
 build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# --- editors / OS ---
+# ─── editors / OS ───────────────────────────────────────────────────
 .DS_Store
 *.swp
 *.swo
 .vscode/
 .idea/
+*.iml
+
+# ─── LaTeX build artefacts (paper/ now lives outside repo, but just in case) ──
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.synctex.gz
+*.toc
