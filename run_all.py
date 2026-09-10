@@ -35,13 +35,23 @@ STAGES = {
     "join":       ("1_data/11_join.py",              "Join all feature TSVs per language"),
     "h1":         ("3_analysis/30_h1_extremes.py",   "H1: Wilcoxon extremes"),
     "h2":         ("3_analysis/31_h2_monotonic.py",  "H2: Kendall tau"),
-    "h3":         ("3_analysis/32_h3_split.py",      "H3: Split analysis"),
+    # 'h3' is dispatched from config `analysis.ah_method` at runtime:
+    #   "quadratic" (default) → 34_h3_quadratic.py  (arousal via β₂ curvature)
+    #   "split"               → 32_h3_split.py       (paper's original fixed 3.5 split)
+    "h3":         ("3_analysis/34_h3_quadratic.py", "H3: quadratic-AH (default; switch via config.analysis.ah_method)"),
     "corrections":("3_analysis/33_corrections.py",   "Print BH correction summary"),
-    "gamm":       ("3_analysis/34_gamm.py",          "GAMM (optional, booleaned off)"),
+    "gamm":       ("3_analysis/36_gamm.py",          "GAMM (optional, booleaned off)"),
     "vad":        ("3_analysis/35_vad.py",            "VAD correlation on text"),
     "tables":     ("4_outputs/40_tables.py",          "Generate LaTeX tables"),
     "numbers":    ("4_outputs/41_numbers.py",          "Emit numbers.json"),
     "plots":      ("4_outputs/42_plots.py",            "Generate all figures"),
+}
+
+H3_SCRIPTS = {
+    "quadratic": ("3_analysis/34_h3_quadratic.py",
+                  "H3: quadratic-AH (β₂ curvature, vertex ∈ (0,5))"),
+    "split":     ("3_analysis/32_h3_split.py",
+                  "H3: split analysis (paper's original fixed inflection)"),
 }
 
 DEFAULT_ORDER = [
@@ -66,8 +76,9 @@ def parse_args():
     return p.parse_args()
 
 
-def run_stage(name: str, script: str, extra_args: list[str]) -> bool:
-    cmd = [sys.executable, "-u", script, "--config", "config.json"] + extra_args
+def run_stage(name: str, script: str, extra_args: list[str],
+              config_path: str = "config.json") -> bool:
+    cmd = [sys.executable, "-u", script, "--config", config_path] + extra_args
     print(f"\n{'='*60}")
     print(f"STAGE: {name.upper()}  [{datetime.now().strftime('%H:%M:%S')}]")
     print(f"CMD:   {' '.join(cmd)}")
@@ -88,6 +99,16 @@ def main():
     args = parse_args()
     lang_args = (["--langs"] + args.langs) if args.langs else []
 
+    # Resolve h3 script from config (ah_method: "quadratic" | "split", default "quadratic")
+    import json as _json
+    _cfg = _json.load(open(Path(__file__).parent / args.config))
+    _ah_method = _cfg.get("analysis", {}).get("ah_method", "quadratic")
+    if _ah_method not in H3_SCRIPTS:
+        print(f"[WARN] Unknown ah_method={_ah_method!r}; falling back to 'quadratic'")
+        _ah_method = "quadratic"
+    STAGES["h3"] = H3_SCRIPTS[_ah_method]
+    print(f"AH method: {_ah_method}  →  {STAGES['h3'][0]}")
+
     if args.only:
         order = [s for s in DEFAULT_ORDER if s in args.only]
     else:
@@ -106,7 +127,7 @@ def main():
             extra.append("--dry-run")
         if name in WORKER_STAGES:
             extra += ["--workers", str(args.workers)]
-        ok = run_stage(name, script, extra)
+        ok = run_stage(name, script, extra, config_path=args.config)
         if not ok:
             print(f"\n[ERROR] Stage '{name}' failed. Stopping.")
             failed.append(name)

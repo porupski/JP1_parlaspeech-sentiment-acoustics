@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # ============================================================
-# Script:  34_gamm.py
+# Script:  36_gamm.py
 # Release: 1.0
-# Version: v1.00
+# Version: v1.01
+#   Renamed from 34_gamm.py — 34 slot reassigned to 34_h3_quadratic.py.
 # Purpose: GAMM analysis via rpy2 (optional, booleaned off by default).
 #          Enable: set "enable_gamm": true in config.json.
 #

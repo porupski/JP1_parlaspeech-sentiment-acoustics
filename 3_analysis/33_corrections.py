@@ -92,15 +92,44 @@ def main():
             print(f"  Kendall tau:  {raw_sig}/{tot} raw sig | {bh_sig}/{tot} after BH")
 
         elif name == "H3":
-            checks = {"strong": 0, "partial": 0, "none": 0}
-            for k, v in results.items():
-                chk = v.get("check", "none")
-                checks[chk] = checks.get(chk, 0) + 1
-            n = sum(checks.values())
-            print(f"  Strong arousal:   {checks['strong']}/{n}")
-            print(f"  Partial arousal:  {checks['partial']}/{n}")
-            print(f"  No arousal:       {checks['none']}/{n}")
-            print(f"  Supported (strong+partial): {checks['strong']+checks['partial']}/{n}")
+            method = results.get("_method", "split")
+            # Filter to cell entries (skip metadata keys prefixed with '_')
+            cells = {k: v for k, v in results.items()
+                     if not k.startswith("_") and isinstance(v, dict)}
+            if method == "quadratic":
+                shapes = {"U": 0, "inverted_U": 0, "linear": 0}
+                raw_sig, tot, bh_sig = 0, 0, 0
+                for v in cells.values():
+                    shp = v.get("shape")
+                    if shp in shapes: shapes[shp] += 1
+                    p = v.get("p_b2", np.nan)
+                    p_bh = v.get("p_b2_bh", np.nan)
+                    if p is None or (isinstance(p, float) and np.isnan(p)): continue
+                    tot += 1
+                    if p < alpha: raw_sig += 1
+                    if p_bh is not None and not (isinstance(p_bh, float) and np.isnan(p_bh)) \
+                            and p_bh < alpha:
+                        bh_sig += 1
+                n = sum(shapes.values())
+                print(f"  Method:            quadratic  (vertex boundary "
+                      f"{results.get('_vertex_boundary', 'n/a')})")
+                print(f"  U-shape:           {shapes['U']}/{n}")
+                print(f"  Inverted-U:        {shapes['inverted_U']}/{n}")
+                print(f"  Linear:            {shapes['linear']}/{n}")
+                print(f"  p(β₂):             {raw_sig}/{tot} raw sig | "
+                      f"{bh_sig}/{tot} after BH")
+            else:
+                checks = {"strong": 0, "partial": 0, "none": 0}
+                for v in cells.values():
+                    chk = v.get("check", "none")
+                    checks[chk] = checks.get(chk, 0) + 1
+                n = sum(checks.values())
+                print(f"  Method:            split (fixed inflection)")
+                print(f"  Strong arousal:    {checks['strong']}/{n}")
+                print(f"  Partial arousal:   {checks['partial']}/{n}")
+                print(f"  No arousal:        {checks['none']}/{n}")
+                print(f"  Supported (strong+partial): "
+                      f"{checks['strong']+checks['partial']}/{n}")
 
 
 if __name__ == "__main__":
