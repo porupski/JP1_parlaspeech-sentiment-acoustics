@@ -964,6 +964,86 @@ def group_H(lang_dfs: dict, n_bins: int, outdir: Path, results: dict) -> None:
 
 
 # ─────────────────────────────────────────────
+# Group I: Sentiment × NRC-VAD bin-trace plots per language
+#
+# Reproduces the sentiment × VAD trace figure from old 50_explore Cell 8:
+# per-lang 3-panel (V, A, D) with bin-mean + bin-median + linear fit +
+# Spearman r annotation. Useful appendix figure for the "sentiment tracks
+# valence" sensitivity check.
+# ─────────────────────────────────────────────
+def group_I(lang_dfs: dict, vad_dfs: dict, n_bins: int,
+            outdir: Path, results: dict) -> None:
+    print("\n=== Group I · sentiment × NRC-VAD bin-trace plots ===")
+    if not vad_dfs:
+        print("  no VAD TSVs — skipping"); return
+    dims = ["valence", "arousal", "dominance"]
+    x_centres = 0.5 * (np.linspace(0, 5, n_bins + 1)[:-1] +
+                        np.linspace(0, 5, n_bins + 1)[1:])
+    results.setdefault("I", {})
+
+    def _plot(merged: pd.DataFrame, title: str, save_stub: str, key: str):
+        merged = merged.copy()
+        merged["_bin"] = pd.cut(merged["sentiment_score"],
+                                bins=np.linspace(0, 5, n_bins + 1),
+                                labels=False, include_lowest=True)
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.2), squeeze=False)
+        axes = axes[0]
+        results["I"].setdefault(key, {})
+        for ax, dim in zip(axes, dims):
+            sub = merged.dropna(subset=["sentiment_score", dim])
+            if len(sub) < 30:
+                ax.set_title(f"{dim} — n < 30"); continue
+            rho, p = stats.spearmanr(sub["sentiment_score"], sub[dim])
+            grouped = sub.groupby("_bin")[dim]
+            means   = grouped.mean().reindex(range(n_bins))
+            medians = grouped.median().reindex(range(n_bins))
+            counts  = grouped.count().reindex(range(n_bins), fill_value=0)
+            ok = counts >= 3
+            ax.plot(x_centres[ok], means[ok].values, "o-", ms=4, lw=1.5,
+                     color="#2196F3", label="bin mean")
+            ax.plot(x_centres[ok], medians[ok].values, "s--", ms=4, lw=1.5,
+                     color="#FF9800", label="bin median")
+            x_fit = x_centres[ok]; y_fit = means[ok].values
+            if len(x_fit) >= 3:
+                m, b = np.polyfit(x_fit, y_fit, 1)
+                ax.plot(x_fit, m * x_fit + b, "k:", lw=1.2,
+                         label=f"slope={m:+.3f}")
+            ax.set_title(f"{dim}\nSpearman ρ={rho:+.3f}  p={p:.2e}  n={len(sub):,}",
+                          fontsize=10)
+            ax.set_xlabel("Sentiment"); ax.set_ylabel(dim.capitalize())
+            ax.legend(fontsize=8, frameon=False)
+            results["I"][key][dim] = {"rho": float(rho), "p": float(p),
+                                       "n": int(len(sub))}
+        fig.suptitle(title, fontsize=12)
+        plt.tight_layout()
+        fig.savefig(outdir / save_stub, dpi=140)
+        plt.close(fig)
+
+    # Per-lang
+    for L in ALL_LANGS:
+        if L not in lang_dfs or L not in vad_dfs: continue
+        merged = lang_dfs[L].merge(vad_dfs[L][["utterance_id", "valence",
+                                                 "arousal", "dominance"]],
+                                     on="utterance_id", how="inner")
+        _plot(merged, title=f"Sentiment × NRC-VAD — {L}",
+               save_stub=f"I_sentiment_vs_vad_{L}.png", key=L)
+
+    # Pooled GLOBAL — utterance rows concatenated across langs
+    frames = []
+    for L in ALL_LANGS:
+        if L not in lang_dfs or L not in vad_dfs: continue
+        frames.append(lang_dfs[L].merge(vad_dfs[L][["utterance_id", "valence",
+                                                      "arousal", "dominance"]],
+                                          on="utterance_id", how="inner"))
+    if frames:
+        pooled = pd.concat(frames, ignore_index=True)
+        _plot(pooled, title="Sentiment × NRC-VAD — GLOBAL_pooled (5 langs)",
+               save_stub="I_sentiment_vs_vad_GLOBAL.png", key="GLOBAL_pooled")
+
+    print(f"  Group I → per-lang + GLOBAL_pooled figures")
+
+
+# ─────────────────────────────────────────────
 # Summary TSV
 # ─────────────────────────────────────────────
 def write_summary_tsv(results: dict, out_tsv: Path) -> None:
@@ -1002,8 +1082,8 @@ def parse_args():
     p.add_argument("--config", default="config.json")
     p.add_argument("--outdir", default=None,
                    help="Override output subdir (default: results/figures/all_angles)")
-    p.add_argument("--groups", default="ABCDEFGH",
-                   help="Which groups to run (subset of ABCDEFGH, e.g. --groups AH)")
+    p.add_argument("--groups", default="ABCDEFGHI",
+                   help="Which groups to run (subset of ABCDEFGHI, e.g. --groups AH)")
     return p.parse_args()
 
 
@@ -1018,13 +1098,13 @@ def main():
     figdir.mkdir(parents=True, exist_ok=True)
     tabdir = rdir / "tables"; tabdir.mkdir(parents=True, exist_ok=True)
 
-    GROUPS_ENABLED = {g: (g in args.groups) for g in "ABCDEFGH"}
+    GROUPS_ENABLED = {g: (g in args.groups) for g in "ABCDEFGHI"}
     print(f"Groups enabled: {[g for g,on in GROUPS_ENABLED.items() if on]}")
     print(f"Output figures  → {figdir}")
     print(f"Output tables   → {tabdir}")
 
     lang_dfs = load_features(idir, ALL_LANGS, n_bins)
-    vad_dfs  = load_vad(idir, ALL_LANGS) if GROUPS_ENABLED["F"] else {}
+    vad_dfs  = load_vad(idir, ALL_LANGS) if (GROUPS_ENABLED["F"] or GROUPS_ENABLED["I"]) else {}
 
     results: dict = {"n_bins": n_bins, "entities_loaded": list(lang_dfs.keys())}
     if GROUPS_ENABLED["A"]: group_A(lang_dfs, n_bins, figdir, results)
@@ -1035,6 +1115,7 @@ def main():
     if GROUPS_ENABLED["F"]: group_F(lang_dfs, vad_dfs, figdir, results)
     if GROUPS_ENABLED["G"]: group_G(rdir, figdir, results)
     if GROUPS_ENABLED["H"]: group_H(lang_dfs, n_bins, figdir, results)
+    if GROUPS_ENABLED["I"]: group_I(lang_dfs, vad_dfs, n_bins, figdir, results)
 
     write_summary_tsv(results, tabdir / "all_angles_summary.tsv")
     out_json = rdir / "all_angles.json"
