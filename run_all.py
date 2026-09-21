@@ -45,6 +45,7 @@ STAGES = {
     "tables":     ("4_outputs/40_tables.py",          "Generate LaTeX tables"),
     "numbers":    ("4_outputs/41_numbers.py",          "Emit numbers.json"),
     "plots":      ("4_outputs/42_plots.py",            "Generate all figures"),
+    "editorial":  ("4_outputs/43_editorial_publishable.py", "Editorial publication-grade figures (H1+H2, no quadratic)"),
 }
 
 H3_SCRIPTS = {
@@ -58,7 +59,7 @@ DEFAULT_ORDER = [
     "filter", "speechrate", "praat", "opensmile",
     "join", "normalize",
     "h1", "h2", "h3", "corrections", "vad",
-    "tables", "numbers", "plots",
+    "tables", "numbers", "plots", "editorial",
 ]
 
 
@@ -88,7 +89,7 @@ def run_stage(name: str, script: str, extra_args: list[str],
 
 
 WORKER_STAGES = {"praat", "opensmile", "vad"}
-NO_LANG_STAGES = {"corrections", "tables", "numbers", "plots"}
+NO_LANG_STAGES = {"corrections", "tables", "numbers", "plots", "editorial"}
 
 
 def main():

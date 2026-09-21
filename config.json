@@ -3,7 +3,7 @@
   "version": "1.0",
   "seed": 42,
 
-  "languages": ["HR", "CZ", "PL", "RS", "SI"],
+  "languages": ["HR", "CZ", "PL", "RS"],
   "parlaspeech_version": "4.0",
 
   "filter": {
@@ -19,9 +19,9 @@
     "n_bins": 60,
     "sentiment_min": 0.0,
     "sentiment_max": 5.0,
-    "ah_method": "quadratic",
+    "ah_method": "split",
     "_ah_method_note": "AH implementation. 'quadratic' (default) = 34_h3_quadratic.py: per-cell quadratic β₂ fit, arousal-positive if p(β₂)<0.05 AND vertex ∈ (0,5). 'split' = 32_h3_split.py: paper's original fixed-inflection split test (retained for reproduction).",
-    "split_point": null,
+    "split_point": 3.5,
     "_split_point_note": "null = auto-detected from global trend minimum on v4 data. Set a float to override. Used only when ah_method='split'.",
     "global_trend_weighting": "equal_language",
     "_global_trend_weighting_note": "equal_language: each language contributes equally regardless of speaker count. weighted_speaker: pool all speaker curves.",
@@ -34,10 +34,10 @@
     "_save_opensmile_lld_note": "Save GeMAPSv01b LowLevelDescriptors (frame-level) to {lang}_opensmile_lld.npz. Keys: utterance_ids, times, f0_lld, loudness_lld, f1_lld, f2_lld, f3_lld, hnr_lld. F0 in log semitones from 27.5Hz.",
     "enable_text_vad": true,
     "enable_audio_vad": false,
-    "kendall_on_bins": true,
+    "kendall_on_bins": false,
     "_kendall_on_bins_note": "true = Kendall per speaker on 60 bin means (matches caption). false = Kendall on raw utterances. See CODE_AUDIT §7.1.",
-    "features_main": ["f0_raw", "intensity_norm", "speechrate_wps"],
-    "features_appendix": ["f0_norm", "intensity_raw", "speechrate_sps"],
+    "features_main": ["f0_raw", "intensity_raw", "speechrate_wps"],
+    "features_appendix": ["f0_norm", "intensity_norm", "speechrate_sps"],
     "feature_display_names": {
       "f0_raw": "F0 (pitch)",
       "f0_norm": "F0 norm",
