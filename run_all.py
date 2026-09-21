@@ -36,9 +36,9 @@ STAGES = {
     "h1":         ("3_analysis/30_h1_extremes.py",   "H1: Wilcoxon extremes"),
     "h2":         ("3_analysis/31_h2_monotonic.py",  "H2: Kendall tau"),
     # 'h3' is dispatched from config `analysis.ah_method` at runtime:
-    #   "quadratic" (default) → 34_h3_quadratic.py  (arousal via β₂ curvature)
-    #   "split"               → 32_h3_split.py       (paper's original fixed 3.5 split)
-    "h3":         ("3_analysis/34_h3_quadratic.py", "H3: quadratic-AH (default; switch via config.analysis.ah_method)"),
+    #   "quadratic"         → 34_h3_quadratic.py  (arousal via β₂ curvature)
+    #   "split"  (default)  → 32_h3_split.py       (paper's original fixed 3.5 split)
+    "h3":         ("3_analysis/32_h3_split.py", "H3: fixed 3.5 split (default; switch via config.analysis.ah_method)"),
     "corrections":("3_analysis/33_corrections.py",   "Print BH correction summary"),
     "gamm":       ("3_analysis/36_gamm.py",          "GAMM (optional, booleaned off)"),
     "vad":        ("3_analysis/35_vad.py",            "VAD correlation on text"),
