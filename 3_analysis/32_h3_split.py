@@ -19,12 +19,12 @@ import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from scipy import stats
+from scipy.stats import kendalltau, ttest_1samp, linregress
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.config_loader import load_config, get_intermediate_dir, get_results_dir
-from utils.data_utils import compute_bins, speaker_binned_curves
-from utils.stats import h3_split_side, h3_check, bh_correct
+from utils.data_utils import compute_bins
+from utils.stats import h3_check, bh_correct
 
 
 def parse_args():
@@ -161,6 +161,43 @@ def main():
         }, f, indent=2)
     print(f"Written → {global_out}")
 
+    # Pre-compute bin-centre sentiment values for linear regression x-axis
+    bin_centers = pd.Series(
+        s_min + (np.arange(n_bins) + 0.5) * (s_max - s_min) / n_bins,
+        index=range(n_bins),
+    )
+
+    def _per_speaker_kendall(df_feat: pd.DataFrame, feat: str,
+                              lo: float, hi: float) -> dict:
+        """Per-speaker Kendall on raw utterances in [lo, hi), then t-test on mean tau."""
+        taus, sig_count = [], 0
+        mask = (df_feat["sentiment_score"] >= lo) & (df_feat["sentiment_score"] < hi)
+        side_df = df_feat[mask]
+        for _, grp in side_df.groupby("speaker_id"):
+            if len(grp) < 3:
+                continue
+            tau, p = kendalltau(grp["sentiment_score"].values, grp[feat].values)
+            taus.append(tau)
+            if p < 0.05:
+                sig_count += 1
+        if len(taus) < 3:
+            return {"kendall_p": np.nan, "kendall_tau": np.nan,
+                    "n_speakers": len(taus), "n_sig_speakers": sig_count}
+        _, p = ttest_1samp(taus, 0.0)
+        return {"kendall_p": float(p), "kendall_tau": float(np.mean(taus)),
+                "std_tau": float(np.std(taus)),
+                "n_speakers": len(taus), "n_sig_speakers": sig_count}
+
+    def _linreg_side(binned: pd.Series, side: str) -> dict:
+        """Linear regression on population bin means; x in sentiment units."""
+        seg = binned.loc[:split_bin] if side == "negative" else binned.loc[split_bin:]
+        seg = seg.dropna()
+        if len(seg) < 3:
+            return {"linear_p": np.nan, "linear_slope": np.nan}
+        x = bin_centers.loc[seg.index].values
+        slope, _, _, lp, _ = linregress(x, seg.values)
+        return {"linear_p": float(lp), "linear_slope": float(slope)}
+
     # Per-language, per-feature split analysis
     all_results = {}
     all_pvals_k = []
@@ -173,21 +210,29 @@ def main():
                 continue
             df_feat = df.dropna(subset=[feat])
 
-            # Compute speaker-averaged binned means for this lang+feat
-            binned = df_feat.groupby("bin")[feat].mean().reindex(range(n_bins))
+            # Per-speaker Kendall on raw utterances, each side of split
+            neg_k = _per_speaker_kendall(df_feat, feat, lo=s_min, hi=split_point)
+            pos_k = _per_speaker_kendall(df_feat, feat, lo=split_point, hi=s_max + 1e-9)
 
-            neg_r = h3_split_side(binned, split_bin, side="negative")
-            pos_r = h3_split_side(binned, split_bin, side="positive")
+            # Linear regression on population binned means (x = sentiment value)
+            binned = df_feat.groupby("bin")[feat].mean().reindex(range(n_bins))
+            neg_lin = _linreg_side(binned, "negative")
+            pos_lin = _linreg_side(binned, "positive")
+
+            neg_r = {**neg_k, **neg_lin}
+            pos_r = {**pos_k, **pos_lin}
             check = h3_check(neg_r, pos_r)
 
             key = f"{lang}_{feat}"
             all_results[key] = {"neg": neg_r, "pos": pos_r, "check": check,
                                   "split_bin": split_bin, "split_point": split_point}
 
+            tau_neg = neg_r.get("kendall_tau") or float("nan")
+            tau_pos = pos_r.get("kendall_tau") or float("nan")
             sym = {"strong": "✓", "partial": "+", "none": "×"}[check]
             print(f"  {feat:25s}  "
-                  f"neg: τ={neg_r['kendall_tau']:.3f} | "
-                  f"pos: τ={pos_r['kendall_tau']:.3f} | {sym}")
+                  f"neg: τ={tau_neg:.3f} (n={neg_r.get('n_speakers','?')}) | "
+                  f"pos: τ={tau_pos:.3f} (n={pos_r.get('n_speakers','?')}) | {sym}")
 
             all_pvals_k.append(neg_r.get("kendall_p", np.nan))
             all_pvals_k.append(pos_r.get("kendall_p", np.nan))
