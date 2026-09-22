@@ -44,7 +44,7 @@ from utils.config_loader import (
 # ─────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────
-ALL_LANGS = ["HR", "CZ", "PL", "RS", "SI"]
+ALL_LANGS = ["HR", "CZ", "PL", "RS"] # "SI"
 LANGS_4   = ["HR", "CZ", "PL", "RS"]
 
 # Feature families, each with (raw_variant, alt_variant)
