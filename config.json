@@ -36,8 +36,8 @@
     "enable_audio_vad": false,
     "kendall_on_bins": false,
     "_kendall_on_bins_note": "true = Kendall per speaker on 60 bin means (matches caption). false = Kendall on raw utterances. See CODE_AUDIT §7.1.",
-    "features_main": ["f0_raw", "intensity_raw", "speechrate_wps"],
-    "features_appendix": ["f0_norm", "intensity_norm", "speechrate_sps"],
+    "features_main": ["f0_raw", "intensity_norm", "speechrate_wps"],
+    "features_appendix": ["f0_norm", "intensity_raw", "speechrate_sps"],
     "feature_display_names": {
       "f0_raw": "F0 (pitch)",
       "f0_norm": "F0 norm",

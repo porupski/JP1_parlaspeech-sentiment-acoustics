@@ -23,7 +23,7 @@ from utils.plotting import plot_trend_curves, save_fig, PALETTE
 
 # ===== EDITORIAL CONFIG =====================================================
 LANGUAGES = ["HR", "CZ", "PL", "RS"]                  # remove any to exclude
-FEATURES  = ["f0_raw", "intensity_raw", "speechrate_wps"]
+FEATURES  = ["f0_raw", "intensity_norm", "speechrate_wps"]
 
 OUT_DIR   = Path(__file__).resolve().parent.parent / "results/figures/publishable"
 DPI       = 300
